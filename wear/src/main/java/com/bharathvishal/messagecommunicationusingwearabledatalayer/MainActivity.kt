@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity() {
 
         communicationManager = WearCommunicationManager(this, binding)
 
-        // Appel pour afficher la liste des capteurs disponibles dans le Logcat
+        // Log the sensors available on this device.
         listAllSensors()
 
         if (!hasPermissions()) {

@@ -13,6 +13,7 @@ import androidx.compose.material.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -45,7 +46,7 @@ fun SplashScreen() {
     val alpha = remember { Animatable(0f) }
     val offsetY = remember { Animatable(20f) }
 
-    val fullText = "Towards healthier workplaces"
+    val fullText = LocalContext.current.localized("Towards healthier workplaces")
     var animatedText by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
@@ -70,7 +71,7 @@ fun SplashScreen() {
 
         fullText.forEachIndexed { index, _ ->
             animatedText = fullText.substring(0, index + 1)
-            delay(80) // Vitesse d'écriture
+            delay(80) // Delay between successive characters.
         }
     }
 

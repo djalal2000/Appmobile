@@ -7,7 +7,7 @@
 //
 //interface APIService {
 //
-//    // Envoi des données JSON via POST
+//    // Submit JSON data using HTTP POST.
 //    @POST("/json/post")
 //    suspend fun sendData(@Body data: List<Data>): Response<ResponseBody>
 //}

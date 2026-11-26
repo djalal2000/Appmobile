@@ -53,7 +53,7 @@ data class Data(
 
         val fields = mutableListOf<String>()
 
-        // 🔹 Accélération
+        // Acceleration
         acceX?.let { fields.add("acceX=$it") }
         acceY?.let { fields.add("acceY=$it") }
         acceZ?.let { fields.add("acceZ=$it") }
@@ -61,17 +61,17 @@ data class Data(
         gyroY?.let { fields.add("gyroY=$it") }
         gyroZ?.let { fields.add("gyroZ=$it") }
 
-        // 🔹 gravité
+        // Gravity
         gravityX?.let { fields.add("gravityX=$it") }
         gravityY?.let { fields.add("gravityY=$it") }
         gravityZ?.let { fields.add("gravityZ=$it") }
 
-        // 🔹 Linear Acceleration
+        // Linear acceleration
         linAccX?.let { fields.add("linAccX=$it") }
         linAccY?.let { fields.add("linAccY=$it") }
         linAccZ?.let { fields.add("linAccZ=$it") }
 
-        // 🔹 Rotation Vector
+        // Rotation vector
         rotX?.let { fields.add("rotX=$it") }
         rotY?.let { fields.add("rotY=$it") }
         rotZ?.let { fields.add("rotZ=$it") }

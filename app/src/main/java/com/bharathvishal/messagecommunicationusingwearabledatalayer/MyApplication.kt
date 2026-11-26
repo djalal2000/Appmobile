@@ -7,7 +7,7 @@ class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        //For dynamic theming on Android 12 and above
+        // Apply dynamic colors on Android 12 and later.
         DynamicColors.applyToActivitiesIfAvailable(this)
     }
 }

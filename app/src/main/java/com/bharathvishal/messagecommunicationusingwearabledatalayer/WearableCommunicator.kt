@@ -5,7 +5,14 @@ import android.util.Log
 import android.widget.Toast
 import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import com.google.android.gms.tasks.Task
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 
@@ -17,63 +24,137 @@ class WearableCommunicator(
 
     private val wearableAppCheckPayload = "AppOpenWearable"
     private val wearableAppCheckPayloadReturnACK = "AppOpenWearableACK"
-    private var currentAckFromWearForAppOpenCheck: String? = null
+    private val connectionCheckMutex = Mutex()
+    @Volatile private var pendingConnectionAck: CompletableDeferred<Unit>? = null
+    @Volatile private var listenerRegistration: Task<Void>? = null
+    private val connectionTimeoutMs = 7000L
 
     private val APP_OPEN_WEARABLE_PAYLOAD_PATH = "/APP_OPEN_WEARABLE_PAYLOAD"
     private val MESSAGE_ITEM_RECEIVED_PATH = "/message-item-received"
+    // PEMESA_WATCH_BATTERY_V1
+    private val WATCH_BATTERY_PATH = "/pemesa/watch-battery"
+    var onWatchBatteryLevel: ((Int?) -> Unit)? = null
 
-    var lastNodeId: String? = null
-
-    suspend fun checkWearableConnection() = withContext(Dispatchers.IO) {
-        Log.d("WearableConnectionCheck", "Démarrage de la vérification de la connexion...")
-        val nodeListTask = Wearable.getNodeClient(context).connectedNodes
+    fun requestWatchBattery() {
+        val nodeId = lastNodeId ?: return
         try {
-            val nodes = Tasks.await(nodeListTask)
-            if (nodes.isNotEmpty()) {
-                val node = nodes.first()
-                lastNodeId = node.id
-                Log.d("WearableConnectionCheck", "Noeud trouvé : ${node.displayName} (${node.id})")
-                val payload = wearableAppCheckPayload.toByteArray()
+            Wearable.getMessageClient(context)
+                .sendMessage(nodeId, WATCH_BATTERY_PATH,
+                    "get".toByteArray(StandardCharsets.UTF_8))
+                .addOnFailureListener { error ->
+                    Log.w("WearBattery", "Battery request failed", error)
+                }
+        } catch (error: Exception) {
+            Log.w("WearBattery", "Battery request failed", error)
+        }
+    }
 
-                Log.d("WearableSend", "📤 Envoi du ping : $wearableAppCheckPayload à ${node.id}")
-                val sendMessageTask = Wearable.getMessageClient(context)
-                    .sendMessage(node.id, APP_OPEN_WEARABLE_PAYLOAD_PATH, payload)
 
-                Tasks.await(sendMessageTask)
+    @Volatile var lastNodeId: String? = null
 
-                currentAckFromWearForAppOpenCheck = null
+    /**
+     * Checks transport availability and waits for the watch application to acknowledge the ping.
+     * Acknowledgements are delivered by the message listener rather than a polling loop.
+     */
+    suspend fun checkWearableConnection() = withContext(Dispatchers.IO) {
+        connectionCheckMutex.withLock {
+            val registration = listenerRegistration ?: return@withLock
+            var ack: CompletableDeferred<Unit>? = null
+            try {
+                Tasks.await(registration, connectionTimeoutMs, TimeUnit.MILLISECONDS)
+                if (listenerRegistration !== registration) return@withLock
 
-                val ackTimeout = 7000L
-                val ackInterval = 200L
-                val startTime = System.currentTimeMillis()
-
-                while (System.currentTimeMillis() - startTime < ackTimeout) {
-                    if (currentAckFromWearForAppOpenCheck == wearableAppCheckPayloadReturnACK) {
-                        Log.d("WearablePing", "✅ Réponse ACK reçue depuis la montre")
-                        withContext(Dispatchers.Main) {
-                            onWearableConnected(true, true)
-                        }
-                        return@withContext
+                val nodes = Tasks.await(Wearable.getNodeClient(context).connectedNodes,
+                    connectionTimeoutMs, TimeUnit.MILLISECONDS)
+                if (listenerRegistration !== registration) return@withLock
+                val node = nodes.firstOrNull()
+                if (node == null) {
+                    lastNodeId = null
+                    withContext(Dispatchers.Main) {
+                        if (listenerRegistration === registration) onWearableConnected(false, false)
                     }
-                    kotlinx.coroutines.delay(ackInterval)
+                    return@withLock
                 }
 
-                Log.d("WearablePing", "⚠️ Timeout - Réponse ACK non reçue, mais montre connectée")
-                withContext(Dispatchers.Main) {
-                    onWearableConnected(true, false)
-                }
+                lastNodeId = node.id
+                // Install the waiter before sending: a fast reply must not be lost.
+                val response = CompletableDeferred<Unit>()
+                ack = response
+                pendingConnectionAck = response
+                Wearable.getMessageClient(context)
+                    .sendMessage(node.id, APP_OPEN_WEARABLE_PAYLOAD_PATH,
+                        wearableAppCheckPayload.toByteArray(StandardCharsets.UTF_8))
+                    .addOnFailureListener { error -> response.completeExceptionally(error) }
 
-            } else {
-                Log.w("WearableConnectionCheck", "❌ Aucun noeud connecté trouvé")
+                val appOpen = withTimeoutOrNull(connectionTimeoutMs) {
+                    response.await()
+                    true
+                } ?: false
+
                 withContext(Dispatchers.Main) {
-                    onWearableConnected(false, false)
+                    if (listenerRegistration === registration) onWearableConnected(true, appOpen)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w("WearableComm", "Connection check failed", error)
+                withContext(Dispatchers.Main) {
+                    if (listenerRegistration === registration) {
+                        lastNodeId = null
+                        onWearableConnected(false, false)
+                    }
+                }
+            } finally {
+                if (pendingConnectionAck === ack) pendingConnectionAck = null
+                ack?.cancel()
             }
-        } catch (e: Exception) {
-            Log.e("WearableComm", "❌ Erreur lors de la vérification de la connexion", e)
-            withContext(Dispatchers.Main) {
-                onWearableConnected(false, false)
-            }
+        }
+    }
+
+    // PEMESA_COMMAND_ACK_V1
+    private val commandPath = "/pemesa/command-v1"
+    private val commandAckPath = "/pemesa/command-ack-v1"
+    private data class PendingCommand(
+        val nodeId: String,
+        val result: kotlinx.coroutines.CompletableDeferred<String>
+    )
+    private val pendingCommands = java.util.concurrent.ConcurrentHashMap<String, PendingCommand>()
+
+    /** Wait for execution on the watch, not merely successful transport submission. */
+    suspend fun sendConfirmedCommand(message: String): String {
+        val node = lastNodeId ?: return "NO_CONNECTION"
+        val id = java.util.UUID.randomUUID().toString()
+        val pending = PendingCommand(node, kotlinx.coroutines.CompletableDeferred())
+        pendingCommands[id] = pending
+        try {
+            val envelope = org.json.JSONObject().put("id", id).put("payload", message)
+            Wearable.getMessageClient(context)
+                .sendMessage(node, commandPath, envelope.toString().toByteArray(StandardCharsets.UTF_8))
+                .addOnFailureListener { error ->
+                    Log.w("WearableComm", "Command transport failed", error)
+                    pending.result.complete("UNKNOWN")
+                }
+            return kotlinx.coroutines.withTimeoutOrNull(3000L) { pending.result.await() } ?: "UNKNOWN"
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("WearableComm", "Command could not be confirmed", error)
+            return "UNKNOWN"
+        } finally {
+            pendingCommands.remove(id)
+            pending.result.cancel()
+        }
+    }
+
+    private fun receiveCommandAck(event: MessageEvent, message: String) {
+        try {
+            val ack = org.json.JSONObject(message)
+            val pending = pendingCommands[ack.getString("id")] ?: return
+            if (pending.nodeId != event.sourceNodeId) return
+            val result = ack.getString("result")
+            if (result in setOf("OK", "REJECTED", "UNKNOWN")) pending.result.complete(result)
+        } catch (error: Exception) {
+            Log.w("WearableComm", "Invalid command acknowledgement", error)
         }
     }
 
@@ -81,7 +162,7 @@ class WearableCommunicator(
         val nodeId = lastNodeId
         if (nodeId == null) {
             Log.w("WearableSend", "❌ Aucun noeud disponible pour l'envoi : $message")
-            Toast.makeText(context, "Aucune montre connectée", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.localized("No watch connected"), Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -95,17 +176,22 @@ class WearableCommunicator(
                     Log.d("WearableSend", "✅ Message envoyé avec succès à $nodeId : $message")
                 } else {
                     Log.e("WearableSend", "❌ Échec de l'envoi du message à $nodeId : $message", it.exception)
-                    Toast.makeText(context, "Échec de l'envoi du message", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.localized("Failed to send message"), Toast.LENGTH_SHORT).show()
                 }
             }
     }
 
     fun registerListeners() {
-        Wearable.getMessageClient(context).addListener(this)
+        listenerRegistration = Wearable.getMessageClient(context).addListener(this)
         Log.d("WearableListener", "📡 Listener enregistré pour les messages")
     }
 
     fun unregisterListeners() {
+        // A command may have executed even if the listener is removed before its reply.
+        pendingCommands.values.forEach { it.result.complete("UNKNOWN") }
+        // Invalidate the registration before releasing the listener.
+        listenerRegistration = null
+        pendingConnectionAck?.cancel()
         Wearable.getMessageClient(context).removeListener(this)
         Log.d("WearableListener", "📴 Listener supprimé pour les messages")
     }
@@ -116,9 +202,19 @@ class WearableCommunicator(
 
         when (event.path) {
             APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
-                currentAckFromWearForAppOpenCheck = message
+                if (listenerRegistration != null && event.sourceNodeId == lastNodeId &&
+                    message == wearableAppCheckPayloadReturnACK) {
+                    pendingConnectionAck?.complete(Unit)
+                }
                 Log.d("WearableACK", "📥 ACK reçu pour vérification d'ouverture : $message")
             }
+            WATCH_BATTERY_PATH -> {
+                // Accept battery readings only from the selected watch.
+                if (event.sourceNodeId == lastNodeId) {
+                    onWatchBatteryLevel?.invoke(message.toIntOrNull()?.takeIf { it in 0..100 })
+                }
+            }
+            commandAckPath -> receiveCommandAck(event, message)
             MESSAGE_ITEM_RECEIVED_PATH -> {
                 onMessageReceivedCallback(message)
             }

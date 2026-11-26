@@ -8,6 +8,11 @@ import android.widget.Toast
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,14 +39,33 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
-    private var currentLanguage by mutableStateOf("English")
+    private var currentLanguage by mutableStateOf(AppLanguage.ENGLISH)
+
+    private fun tr(text: String) = AppLanguage.translate(currentLanguage, text)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        currentLanguage = AppLanguage.get(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContent {
-            MaterialTheme {
+            // PEMESA_UI_REFRESH_V1
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = Color(0xFF096B69),
+                    onPrimary = Color.White,
+                    primaryContainer = Color(0xFFD7F2EE),
+                    onPrimaryContainer = Color(0xFF064C4B),
+                    secondary = Color(0xFF36566B),
+                    background = Color(0xFFF1F6F7),
+                    onBackground = Color(0xFF142D3A),
+                    surface = Color.White,
+                    onSurface = Color(0xFF142D3A),
+                    surfaceVariant = Color(0xFFE8F0F2),
+                    onSurfaceVariant = Color(0xFF405963),
+                    outline = Color(0xFF718991)
+                )
+            ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var showLangDialog by remember { mutableStateOf(false) }
 
@@ -50,14 +74,16 @@ class MainActivity : ComponentActivity() {
                             currentLanguage = currentLanguage,
                             onDismiss = { showLangDialog = false },
                             onLanguageSelected = { lang ->
+                                AppLanguage.set(this, lang)
                                 currentLanguage = lang
-                                Toast.makeText(this, "Selected language: $lang", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this, tr("Selected language:") + " " + AppLanguage.languageName(lang), Toast.LENGTH_SHORT).show()
                                 showLangDialog = false
                             }
                         )
                     }
 
                     MainPage(
+                        language = currentLanguage,
                         onMenuItemClick = { item ->
                             when (item) {
                                 "Exit" -> finish()
@@ -75,9 +101,17 @@ class MainActivity : ComponentActivity() {
 
     private fun showAboutDialog() {
         AlertDialog.Builder(this@MainActivity)
-            .setTitle("About")
+            .setTitle(tr("About"))
             .setMessage(
-                "Developed by Djalal Eddine Bouchekif, a PhD student at the IRIT Laboratory (Institute of Computer Science Research of Toulouse).\n\n" +
+                if (currentLanguage == AppLanguage.FRENCH) {
+                    "Développé par Djalal Eddine Bouchekif, doctorant au laboratoire IRIT (Institut de recherche en informatique de Toulouse).\n\n" +
+                        "Sous la direction de M. Rémi Bastide et de Mme Imen Magdiche.\n\n" +
+                        "Ce travail s’inscrit dans le cadre de ma thèse de doctorat en cours à l’école d’ingénieurs ISIS, réalisée dans le cadre du projet PEMESA, cofinancé par la Région Occitanie en France.\n\n" +
+                        "Contexte du projet PEMESA :\n" +
+                        "Le projet vise à étudier la pénibilité au travail, notamment dans les professions de santé, en exploitant les technologies de l’Internet des objets (IoT), l’intelligence artificielle et l’analyse de données.\n\n" +
+                        "Il repose sur la collecte de données inertielles (accéléromètre et gyroscope) pour identifier les activités physiques et sur le suivi de la fréquence cardiaque à l’aide de montres connectées, complétés par les perceptions subjectives des travailleurs recueillies par questionnaire.\n\n" +
+                        "L’objectif principal est d’identifier les facteurs clés contribuant à la pénibilité au travail afin d’améliorer les conditions de travail dans le secteur médical."
+                } else "Developed by Djalal Eddine Bouchekif, a PhD student at the IRIT Laboratory (Institute of Computer Science Research of Toulouse).\n\n" +
                         "Supervised by Mr. Rémi Bastide and Ms. Imen Magdiche.\n\n" +
                         "This work is part of my ongoing doctoral thesis at the ISIS Engineering School, conducted within the framework of the PEMESA project, co-funded by the Occitanie Region in France.\n\n" +
                         "Context of the PEMESA Project:\n" +
@@ -105,13 +139,13 @@ class MainActivity : ComponentActivity() {
                 val deviceNames = nodeList.joinToString("\n") { "• ${it.displayName} (${it.id})" }
 
                 AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Connected Watches")
+                    .setTitle(tr("Connected Watches"))
                     .setMessage(deviceNames)
                     .setPositiveButton("OK", null)
                     .create()
                     .show()
             } else {
-                Toast.makeText(this@MainActivity, "No connected watch", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, tr("No connected watch"), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -124,12 +158,13 @@ fun LanguageDialog(
     onDismiss: () -> Unit,
     onLanguageSelected: (String) -> Unit
 ) {
-    val languages = listOf("English", "French")
+    val languages = listOf(AppLanguage.ENGLISH, AppLanguage.FRENCH)
+    fun tr(text: String) = AppLanguage.translate(currentLanguage, text)
     var selectedLanguage by remember { mutableStateOf(currentLanguage) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Select Language") },
+        title = { Text(tr("Select Language")) },
         text = {
             Column {
                 languages.forEach { lang ->
@@ -145,19 +180,19 @@ fun LanguageDialog(
                             onClick = { selectedLanguage = lang }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = lang)
+                        Text(text = AppLanguage.languageName(lang))
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = { onLanguageSelected(selectedLanguage) }) {
-                Text("Confirm")
+                Text(tr("Confirm"))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(tr("Cancel"))
             }
         }
     )
@@ -165,7 +200,8 @@ fun LanguageDialog(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainPage(onMenuItemClick: (String) -> Unit) {
+fun MainPage(onMenuItemClick: (String) -> Unit, language: String = AppLanguage.ENGLISH) {
+    fun tr(text: String) = AppLanguage.translate(language, text)
     var id by remember { mutableStateOf("") }
     var professionFull by remember { mutableStateOf("") }
     var activityList by remember { mutableStateOf(listOf<String>()) }
@@ -219,6 +255,9 @@ fun MainPage(onMenuItemClick: (String) -> Unit) {
         }
     }
 
+    val formOpacity = remember { Animatable(0.82f) }
+    LaunchedEffect(Unit) { formOpacity.animateTo(1f, tween(320)) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
             painter = painterResource(id = R.drawable.background),
@@ -227,6 +266,15 @@ fun MainPage(onMenuItemClick: (String) -> Unit) {
                 .fillMaxSize()
                 .zIndex(0f),
             contentScale = ContentScale.Crop
+        )
+        Box(
+            modifier = Modifier.fillMaxSize().background(
+                Brush.verticalGradient(listOf(
+                    Color(0xFFF1F6F7).copy(alpha = 0.10f),
+                    Color(0xFFF1F6F7).copy(alpha = 0.35f),
+                    Color(0xFFF1F6F7).copy(alpha = 0.94f)
+                ))
+            )
         )
 
         Column(
@@ -237,55 +285,72 @@ fun MainPage(onMenuItemClick: (String) -> Unit) {
             verticalArrangement = Arrangement.Top,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            SimpleTopAppBar(onMenuItemClick)
+            SimpleTopAppBar(onMenuItemClick, language)
 
             Spacer(modifier = Modifier.weight(1f))
 
-            OutlinedTextField(
-                value = id,
-                onValueChange = { id = it },
-                label = { Text("ID") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp)
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth().alpha(formOpacity.value),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = 6.dp
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    OutlinedTextField(
+                        value = id,
+                        onValueChange = { id = it },
+                        label = { Text("ID") },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp)
+                    )
 
-            DropdownField(
-                label = "Select a profession",
-                options = professions,
-                selectedOption = professionFull,
-                onOptionSelected = { professionFull = it }
-            )
+                    DropdownField(
+                        label = tr("Select a profession"),
+                        options = professions,
+                        selectedOption = professionFull,
+                        onOptionSelected = { professionFull = it },
+                        displayOption = { tr(it) }
+                    )
 
-            Button(
-                onClick = {
-                    val intent = Intent(context, ValidationActivity::class.java).apply {
-                        putExtra("id", id)
-                        putExtra("profession", getAbbreviation(professionFull))
-                        putExtra("Activities", activityList.toTypedArray())
+                    Button(
+                        onClick = {
+                            val intent = Intent(context, ValidationActivity::class.java).apply {
+                                putExtra("id", id)
+                                putExtra("profession", getAbbreviation(professionFull))
+                                putExtra("Activities", activityList.toTypedArray())
+                            }
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        enabled = id.isNotBlank() && professionFull.isNotBlank()
+                    ) {
+                        Text(tr("Confirm"), fontSize = 18.sp)
                     }
-                    context.startActivity(intent)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(top = 16.dp),
-                enabled = id.isNotBlank() && professionFull.isNotBlank()
-            ) {
-                Text("Confirm", fontSize = 18.sp)
-            }
 
-            Button(
-                onClick = {
-                    id = ""
-                    professionFull = ""
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .padding(top = 16.dp)
-            ) {
-                Text("Refresh", fontSize = 18.sp)
+                    Button(
+                        onClick = {
+                            id = ""
+                            professionFull = ""
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    ) {
+                        Text(tr("Refresh"), fontSize = 18.sp)
+                    }
+                }
             }
         }
     }
@@ -297,18 +362,38 @@ fun DropdownField(
     label: String,
     options: List<String>,
     selectedOption: String,
-    onOptionSelected: (String) -> Unit
+    onOptionSelected: (String) -> Unit,
+    displayOption: (String) -> String = { it }
 ) {
     var expanded by remember { mutableStateOf(false) }
+    // PEMESA_PROFESSION_NAMES_V1: preserve profession identifiers when display names change.
+    val context = LocalContext.current
+    val preferences = remember(context) {
+        context.getSharedPreferences("profession_display_names", android.content.Context.MODE_PRIVATE)
+    }
+    fun code(option: String): String = option.substringBefore(" - ")
+    val customNames = remember(preferences, options) {
+        mutableStateMapOf<String, String>().apply {
+            options.forEach { option ->
+                preferences.getString(code(option), null)?.let { put(option, it) }
+            }
+        }
+    }
+    fun displayProfession(option: String): String = customNames[option] ?: displayOption(option)
+    val french = AppLanguage.get(context) == AppLanguage.FRENCH
+    fun ui(en: String, fr: String): String = if (french) fr else en
+    var editingOption by remember { mutableStateOf<String?>(null) }
+    var draftName by remember { mutableStateOf("") }
 
     ExposedDropdownMenuBox(
         expanded = expanded,
         onExpandedChange = { expanded = !expanded }
     ) {
         OutlinedTextField(
-            value = selectedOption,
+            value = displayProfession(selectedOption),
             onValueChange = {},
             readOnly = true,
+            shape = RoundedCornerShape(14.dp),
             label = { Text(label) },
             trailingIcon = {
                 Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null)
@@ -325,7 +410,20 @@ fun DropdownField(
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
-                    text = { Text(option) },
+                    text = { Text(displayProfession(option)) },
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            expanded = false
+                            draftName = displayProfession(option)
+                            editingOption = option
+                        }) {
+                            Icon(
+                                Icons.Filled.Edit,
+                                contentDescription = ui("Rename profession", "Renommer le métier") +
+                                    ": " + displayProfession(option)
+                            )
+                        }
+                    },
                     onClick = {
                         onOptionSelected(option)
                         expanded = false
@@ -334,15 +432,49 @@ fun DropdownField(
             }
         }
     }
+
+    editingOption?.let { option ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { editingOption = null },
+            title = { Text(ui("Rename profession", "Renommer le métier")) },
+            text = {
+                OutlinedTextField(
+                    value = draftName,
+                    onValueChange = { draftName = it },
+                    label = { Text(ui("Profession name", "Nom du métier")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = draftName.isNotBlank(),
+                    onClick = {
+                        val newName = draftName.trim()
+                        customNames[option] = newName
+                        preferences.edit().putString(code(option), newName).apply()
+                        editingOption = null
+                    }
+                ) { Text(ui("Save", "Enregistrer")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingOption = null }) {
+                    Text(ui("Cancel", "Annuler"))
+                }
+            }
+        )
+    }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SimpleTopAppBar(onMenuItemClick: (String) -> Unit) {
+fun SimpleTopAppBar(onMenuItemClick: (String) -> Unit, language: String = AppLanguage.ENGLISH) {
+    fun tr(text: String) = AppLanguage.translate(language, text)
     var expanded by remember { mutableStateOf(false) }
 
     TopAppBar(
-        title = {},
+        title = { Text("PEMESA", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleLarge) },
         navigationIcon = {
             Box {
                 IconButton(
@@ -362,44 +494,44 @@ fun SimpleTopAppBar(onMenuItemClick: (String) -> Unit) {
                     modifier = Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Smartwatch") },
+                        text = { Text(tr("Smartwatch")) },
                         onClick = {
                             onMenuItemClick("Smartwatch")
                             expanded = false
                         },
                         leadingIcon = {
-                            Icon(Icons.Filled.Watch, contentDescription = "Smartwatch")
+                            Icon(Icons.Filled.Watch, contentDescription = tr("Smartwatch"))
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Settings") },
+                        text = { Text(tr("Settings")) },
                         onClick = {
                             onMenuItemClick("Settings")
                             expanded = false
                         },
                         leadingIcon = {
-                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                            Icon(Icons.Filled.Settings, contentDescription = tr("Settings"))
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("About") },
+                        text = { Text(tr("About")) },
                         onClick = {
                             onMenuItemClick("About")
                             expanded = false
                         },
                         leadingIcon = {
-                            Icon(Icons.Filled.Info, contentDescription = "About")
+                            Icon(Icons.Filled.Info, contentDescription = tr("About"))
                         }
                     )
                     Divider()
                     DropdownMenuItem(
-                        text = { Text("Exit") },
+                        text = { Text(tr("Exit")) },
                         onClick = {
                             onMenuItemClick("Exit")
                             expanded = false
                         },
                         leadingIcon = {
-                            Icon(Icons.Filled.ExitToApp, contentDescription = "Exit")
+                            Icon(Icons.Filled.ExitToApp, contentDescription = tr("Exit"))
                         }
                     )
                 }

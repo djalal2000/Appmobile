@@ -23,14 +23,14 @@
             </intent-filter>
         </activity>
 
-        <!-- MainActivity  -->
+        <!-- Mobile home screen -->
         <activity
             android:name=".MainActivity"
             android:resizeableActivity="true"
             android:exported="false"
             tools:targetApi="n" />
 
-        <!-- ValidationActivity -->
+        <!-- Recording and activity labeling screen -->
         <activity
             android:name=".ValidationActivity"
             android:exported="true"

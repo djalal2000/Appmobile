@@ -29,6 +29,8 @@ class WearCommunicationManager(
         private const val TAG = "WearComm"
         private const val APP_OPEN_WEARABLE_PAYLOAD_PATH = "/APP_OPEN_WEARABLE_PAYLOAD"
         private const val MESSAGE_ITEM_RECEIVED_PATH = "/message-item-received"
+        // PEMESA_WATCH_BATTERY_V1
+        private const val WATCH_BATTERY_PATH = "/pemesa/watch-battery"
         private const val PREFS_NAME = "watch_prefs"
         private const val SAMPLING_PERIOD_MS = 20L
         private const val SEND_INTERVAL_MS = 10000L
@@ -58,7 +60,7 @@ class WearCommunicationManager(
     private var rotat: Sensor? = null
     private var stepCounter: Sensor? = null
 
-    // Sensor data variables
+    // Latest sensor readings.
     private var xaccel = 0f
     private var yaccel = 0f
     private var zaccel = 0f
@@ -82,8 +84,8 @@ class WearCommunicationManager(
     private var stepCount = 0
     private var lastStepCount = 0
 
-    private var stop = false
-    private var paused = false
+    @Volatile private var stop = false
+    @Volatile private var paused = false
     private var sensorTimer: Timer? = null
 
     private val transmit = TransmissionService()
@@ -126,11 +128,94 @@ class WearCommunicationManager(
                         }
                 }
 
+                WATCH_BATTERY_PATH -> {
+                    // Handle battery requests independently of recording commands.
+                    if (messageStr == "get") {
+                        val battery = context.getSystemService(Context.BATTERY_SERVICE)
+                            as? android.os.BatteryManager
+                        val level = battery?.getIntProperty(
+                            android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY
+                        )?.takeIf { it in 0..100 } ?: -1
+                        Wearable.getMessageClient(context)
+                            .sendMessage(messageEvent.sourceNodeId, WATCH_BATTERY_PATH,
+                                level.toString().toByteArray(StandardCharsets.UTF_8))
+                            .addOnFailureListener { error ->
+                                Log.w(TAG, "Watch battery reply failed", error)
+                            }
+                    }
+                }
+
+                commandPath -> receiveConfirmedCommand(messageEvent.sourceNodeId, messageStr)
                 MESSAGE_ITEM_RECEIVED_PATH -> handleMessagePayload(messageStr)
                 else -> Log.w(TAG, "⚠️ Path non reconnu: $path")
             }
         } catch (e: Exception) {
             Log.e(TAG, "💥 Erreur réception message", e)
+        }
+    }
+
+    // PEMESA_COMMAND_ACK_V1
+    private val commandPath = "/pemesa/command-v1"
+    private val commandAckPath = "/pemesa/command-ack-v1"
+    private val commandHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // Keep only recent command results in memory; never persist them to disk.
+    private val completedCommands = object : LinkedHashMap<String, String>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
+    }
+
+    private fun receiveConfirmedCommand(node: String, message: String) {
+        // Execute control commands serially on the main thread, as with the existing listener.
+        commandHandler.post {
+            val envelope = try { org.json.JSONObject(message) } catch (error: Exception) {
+                Log.w(TAG, "Invalid command envelope", error)
+                return@post
+            }
+            val id = envelope.optString("id")
+            if (id.length != 36 || runCatching { java.util.UUID.fromString(id) }.isFailure) return@post
+            val key = "$node:$id"
+            val result = completedCommands[key] ?: executeConfirmedCommand(envelope.optString("payload")).also {
+                completedCommands[key] = it
+            }
+            val reply = org.json.JSONObject().put("id", id).put("result", result)
+            Wearable.getMessageClient(context)
+                .sendMessage(node, commandAckPath, reply.toString().toByteArray(StandardCharsets.UTF_8))
+                .addOnFailureListener { error -> Log.w(TAG, "Command acknowledgement failed", error) }
+        }
+    }
+
+    private fun executeConfirmedCommand(payload: String): String {
+        val pairs = payload.split(',').map { it.split(':', limit = 2).map(String::trim) }
+        if (pairs.any { it.size != 2 || it[0].isEmpty() || it[1].isEmpty() }) return "REJECTED"
+        val fields = pairs.associate { it[0] to it[1] }
+        if (fields.size != pairs.size || fields.keys.any { it !in setOf("ID", "Profession", "Activity", "FatigueLevel", "Action") }) return "REJECTED"
+        if (fields.values.any { ':' in it }) return "REJECTED"
+        val action = fields["Action"]
+        val fatigue = fields["FatigueLevel"]
+        if (fatigue != null && fatigue.toIntOrNull()?.let { it in 0..5 } != true) return "REJECTED"
+        val running = sensorTimer != null
+        when (action) {
+            "Start" -> if (running || listOf("ID", "Profession", "Activity", "FatigueLevel").any { it !in fields }) return "REJECTED"
+            "Pause", "Resume" -> if (!running) return "REJECTED"
+            "Stop", "Refresh" -> Unit
+            null -> if (fields.keys.any { it !in setOf("Activity", "FatigueLevel") } ||
+                ("Activity" in fields && !running)) return "REJECTED"
+            else -> return "REJECTED"
+        }
+        return try {
+            handleMessagePayload(payload)
+            // Confirm the resulting recording state and the applied metadata.
+            val stateMatches = when (action) {
+                "Start", "Resume" -> sensorTimer != null && !stop && !paused
+                "Pause" -> sensorTimer != null && paused
+                "Stop", "Refresh" -> sensorTimer == null && stop
+                else -> true
+            }
+            val labelMatches = fields["Activity"]?.let { sharedPref.getString("userActivity", null) == it } ?: true
+            val fatigueMatches = fatigue?.let { sharedPref.getString("Fatigue Level", null) == it } ?: true
+            if (stateMatches && labelMatches && fatigueMatches) "OK" else "UNKNOWN"
+        } catch (error: Exception) {
+            Log.e(TAG, "Command execution failed", error)
+            "UNKNOWN"
         }
     }
 
@@ -415,11 +500,8 @@ class WearCommunicationManager(
                 if (dataSet.size < bufferSize) dataSet.add(data) else dataSet[i] = data
 
                 if (i == bufferSize - 1) {
-                    val updatedActivity = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
-                    dataSet.indices.forEach { j ->
-                        dataSet[j] = dataSet[j].copy(label = updatedActivity)
-                    }
-                    transmit.transmitData(dataSet)
+                    // Preserve the activity label assigned at acquisition time.
+                    transmit.transmitData(dataSet.toList())
                     i = 0
                 } else i++
             }
@@ -429,7 +511,10 @@ class WearCommunicationManager(
     private fun stopRecording() {
         stop = true; paused = false
         sensorTimer?.cancel(); sensorTimer = null
-        sensorManager.unregisterListener(sensorListener)
+        // Refresh or stop may arrive before the first recording starts.
+        if (::sensorManager.isInitialized) {
+            sensorManager.unregisterListener(sensorListener)
+        }
         lastStepCount = 0
         lastLightLux = -1f
     }
