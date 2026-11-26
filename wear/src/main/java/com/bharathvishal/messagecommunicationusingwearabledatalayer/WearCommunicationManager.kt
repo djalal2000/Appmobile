@@ -60,6 +60,7 @@ class WearCommunicationManager(
     private var pressureSensor: Sensor? = null
     private var linac: Sensor? = null
     private var rotat: Sensor? = null
+    private var magnetometer: Sensor? = null
     private var stepCounter: Sensor? = null
 
     // Latest sensor readings.
@@ -79,6 +80,9 @@ class WearCommunicationManager(
     private var xLinAcc = 0f
     private var yLinAcc = 0f
     private var zLinAcc = 0f
+    private var magX = 0f
+    private var magY = 0f
+    private var magZ = 0f
     private var xRot = 0f
     private var yRot = 0f
     private var zRot = 0f
@@ -106,7 +110,7 @@ class WearCommunicationManager(
     private var diagnosticJob: Job? = null
     private var configJob: Job? = null
     private val configurationStore = WatchConfigurationStore(context)
-    private var enabledSensors = SENSOR_KEYS.toSet()
+    private var enabledSensors = DEFAULT_SENSOR_KEYS
     private val availableSensors = mutableSetOf<Int>()
     private val freshSensors = mutableSetOf<Int>()
     private var sessionId: String? = null
@@ -343,6 +347,7 @@ class WearCommunicationManager(
                         if (manager.getDefaultSensor(type) != null && permission) available.put(SENSOR_KEYS[index])
                     }
                     available.put("fatigue")
+                    if (manager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD) != null) available.put("magnetometer")
                     val battery = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
                     val memory = android.app.ActivityManager.MemoryInfo()
                     (context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(memory)
@@ -595,6 +600,9 @@ class WearCommunicationManager(
         gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
         linac = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         rotat = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        magnetometer = if ("magnetometer" in enabledSensors) sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD) else null
+        if ("magnetometer" in enabledSensors && magnetometer == null)
+            HealthJournal.add(HealthCode.SENSOR_MISSING, Sensor.TYPE_MAGNETIC_FIELD.toLong())
         stepCounter = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.BODY_SENSORS)
@@ -613,7 +621,7 @@ class WearCommunicationManager(
         availableSensors.clear()
         listOf("accelerometer" to accel, "gyroscope" to gyro, "gravity" to gravitySensor,
             "heart" to hrate, "light" to lightSensor, "pressure" to pressureSensor,
-            "linear" to linac, "rotation" to rotat, "steps" to stepCounter)
+            "linear" to linac, "rotation" to rotat, "steps" to stepCounter, "magnetometer" to magnetometer)
             .filter { it.first in enabledSensors }.forEach { (_, sensor) ->
             sensor?.let {
                 try {
@@ -634,7 +642,7 @@ class WearCommunicationManager(
             event?.let {
                 val required = when (it.sensor.type) {
                     Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE, Sensor.TYPE_GRAVITY,
-                    Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR -> 3
+                    Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_MAGNETIC_FIELD -> 3
                     else -> 1
                 }
                 if (!finiteSensorValues(it.values, required)) {
@@ -718,6 +726,12 @@ class WearCommunicationManager(
                         xLinAcc = it.values[0]
                         yLinAcc = it.values[1]
                         zLinAcc = it.values[2]
+                    }
+
+                    Sensor.TYPE_MAGNETIC_FIELD -> {
+                        magX = it.values[0]
+                        magY = it.values[1]
+                        magZ = it.values[2]
                     }
 
                     Sensor.TYPE_ROTATION_VECTOR -> {
@@ -817,6 +831,9 @@ class WearCommunicationManager(
                             rotY = yRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             rotZ = zRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             rotW = wRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
+                            magX = magX.takeIf { Sensor.TYPE_MAGNETIC_FIELD in freshSensors },
+                            magY = magY.takeIf { Sensor.TYPE_MAGNETIC_FIELD in freshSensors },
+                            magZ = magZ.takeIf { Sensor.TYPE_MAGNETIC_FIELD in freshSensors },
                             label = currentActivityLabel,
                             sessionId = sessionId, sequence = sequence++, watchId = watchId,
                             epochMillis = sessionEpoch + (android.os.SystemClock.elapsedRealtime() - sessionElapsed)

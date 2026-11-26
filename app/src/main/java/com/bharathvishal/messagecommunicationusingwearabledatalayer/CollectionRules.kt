@@ -2,7 +2,8 @@ package com.bharathvishal.messagecommunicationusingwearabledatalayer
 
 import java.net.URI
 
-internal val SENSOR_KEYS = listOf("accelerometer", "gyroscope", "gravity", "linear", "rotation", "heart", "steps", "light", "pressure", "fatigue")
+internal val DEFAULT_SENSOR_KEYS = setOf("accelerometer", "gyroscope", "gravity", "linear", "rotation", "heart", "steps", "light", "pressure", "fatigue")
+internal val SENSOR_KEYS = DEFAULT_SENSOR_KEYS.toList() + "magnetometer"
 
 internal fun validServerUrl(value: String): Boolean = runCatching {
     val uri = URI(value)

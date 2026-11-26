@@ -52,7 +52,10 @@ data class Data(
     val sessionId: String? = null,
     val sequence: Long? = null,
     val sessionFields: String? = null,
-    val watchId: String? = null
+    val watchId: String? = null,
+    val magX: Float? = null,
+    val magY: Float? = null,
+    val magZ: Float? = null
 ) {
 
     internal fun toSessionProtocol(): String {
@@ -91,6 +94,11 @@ data class Data(
         rotY?.takeIf { it.isFinite() }?.let { fields.add("rotY=$it") }
         rotZ?.takeIf { it.isFinite() }?.let { fields.add("rotZ=$it") }
         rotW?.takeIf { it.isFinite() }?.let { fields.add("rotW=$it") }
+
+        // Magnetic field in microteslas.
+        magX?.takeIf { it.isFinite() }?.let { fields.add("magX=$it") }
+        magY?.takeIf { it.isFinite() }?.let { fields.add("magY=$it") }
+        magZ?.takeIf { it.isFinite() }?.let { fields.add("magZ=$it") }
 
         if (fields.isEmpty()) return ""
         sequence?.let { fields.add("sequence=${it}i") }

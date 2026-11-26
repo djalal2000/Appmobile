@@ -28,7 +28,7 @@ internal class CollectionPreferences(context: Context) {
     val organization: String get() = prefs.getString("org", "") ?: ""
     val activity: String get() = prefs.getString("activity", "activity") ?: "activity"
     val wearable: String get() = prefs.getString("wearable", "wearable") ?: "wearable"
-    val sensors: Set<String> get() = prefs.getStringSet("sensors", SENSOR_KEYS.toSet())?.toSet() ?: SENSOR_KEYS.toSet()
+    val sensors: Set<String> get() = prefs.getStringSet("sensors", DEFAULT_SENSOR_KEYS)?.toSet() ?: DEFAULT_SENSOR_KEYS
     val hasToken: Boolean get() = prefs.contains("token")
     val hz: Int get() = prefs.getInt("hz", 50)
     val interval: Int get() = prefs.getInt("interval", 10)
