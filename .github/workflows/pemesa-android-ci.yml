@@ -21,6 +21,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Set up Android command-line tools
+        uses: android-actions/setup-android@v3
       - name: Prepare Android SDK
         run: |
           rm -f local.properties app/local.properties wear/local.properties
