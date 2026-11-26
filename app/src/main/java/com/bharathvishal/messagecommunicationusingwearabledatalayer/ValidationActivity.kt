@@ -549,12 +549,12 @@ class ValidationActivity : AppCompatActivity() {
     private fun updateConnectionStatus(isConnected: Boolean, appOpen: Boolean) {
         when {
             !isConnected -> uiStatusStyle("#FCE7E9", "#922B37")
-            appOpen -> uiStatusStyle("#D7F2EE", "#064C4B")
+            appOpen -> uiStatusStyle("#D6EDA5", "#344C16")
             else -> uiStatusStyle("#FBEBD5", "#744917")
         }
         binding.deviceconnectionStatusTv.text = when {
             !isConnected -> localized("❌ Watch not connected.")
-            appOpen -> localized("✅ Watch connected and app open.")
+            appOpen -> localized("✅ Watch connected and app open.").replace("✅", "✓")
             else -> localized("⚠️ Watch connected but app closed.")
         }
     }
@@ -601,11 +601,17 @@ class ValidationActivity : AppCompatActivity() {
     }
 
     private fun uiStatusStyle(fill: String, ink: String) {
-        binding.deviceconnectionStatusTv.apply {
+        // Apply the connection state to the shared connection-and-battery surface.
+        binding.watchStatusContainer.apply {
             background = uiRounded(uiColor(fill), 18)
-            setTextColor(uiColor(ink))
             setPadding(uiDp(12), uiDp(9), uiDp(12), uiDp(9))
         }
+        binding.deviceconnectionStatusTv.apply {
+            background = null
+            setPadding(0, 0, 0, 0)
+            setTextColor(uiColor(ink))
+        }
+        binding.watchBatteryTv.setTextColor(uiColor(ink))
     }
 
     private fun applyUiDesign() {
@@ -703,7 +709,7 @@ class ValidationActivity : AppCompatActivity() {
 
     private fun updateActivityButtonColor() {
         val idle = uiColor("#F1F6F7")
-        val selected = uiColor("#B9EBC0")
+        val selected = uiColor("#D6EDA5")
         val unlabeled = uiColor("#FFD7A6")
         activityButtons().forEachIndexed { index, button ->
             styleActivityButton(button, if (hasSelectedActivity && activityLabel(index) == selectedActivity) selected else idle)
