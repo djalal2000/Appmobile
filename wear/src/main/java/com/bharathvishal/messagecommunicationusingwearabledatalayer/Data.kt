@@ -50,8 +50,15 @@ data class Data(
     val pressure: Float? = null,
     val epochMillis: Long? = null,
     val sessionId: String? = null,
-    val sequence: Long? = null
+    val sequence: Long? = null,
+    val sessionFields: String? = null
 ) {
+
+    internal fun toSessionProtocol(): String {
+        val fields = sessionFields ?: return ""
+        val tags = "person_id=" + escapeTag(person_id ?: "unknown") + ",session_id=" + escapeTag(sessionId ?: "unknown")
+        return "session_metadata,$tags $fields ${epochMillis ?: parseTimestampToMillis(timestamp)}"
+    }
 
     fun toLineProtocol(): String {
         val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)

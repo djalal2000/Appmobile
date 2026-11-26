@@ -75,6 +75,31 @@ class TransmissionService(private val debugLogs: Boolean = false) {
         catch (_: Exception) { false }
     }
 
+    suspend fun diagnose(server: JSONObject?): JSONObject {
+        val target = if (server == null) original else try {
+            Destination(server.getString("url"), server.getString("org"), server.getString("activity"),
+                server.getString("wearable"), server.getString("token"))
+        } catch (_: Exception) { return JSONObject().put("error", "CONFIG") }
+        if (!validServerUrl(target.url) || target.organization.isBlank() || target.activity.isBlank() ||
+            target.wearable.isBlank() || target.credential.isBlank()) return JSONObject().put("error", "CONFIG")
+        val result = JSONObject()
+        try {
+            val probe = service(target, probeClient)
+            for ((key, bucket) in listOf("activity" to target.activity, "wearable" to target.wearable)) {
+                val response = probe.sendLineProtocol(target.organization, bucket, "ms", "".toRequestBody("text/plain".toMediaType()))
+                result.put(key, response.code())
+                response.body()?.close(); response.errorBody()?.close()
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { result.put("error", when (error) {
+            is javax.net.ssl.SSLException -> "TLS"
+            is java.net.UnknownHostException -> "DNS"
+            is java.io.IOException -> "NETWORK"
+            else -> "CONFIG"
+        }) }
+        return result
+    }
+
     fun pendingCount(): Long = synchronized(writeLock) { activityWrites.pending + wearableWrites.pending }
 
     private class BucketWrites {
@@ -96,7 +121,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             for (samples in activityQueue) {
                 writeBucket(destination.activity, activityWrites, "InfluxDB", "LineProtocol", 1) {
                     samples.flatMap { sample ->
-                        listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
+                        if (sample.sessionFields != null) listOf(sample.toSessionProtocol()) else listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
                             .filter { it.isNotBlank() }
                     }.joinToString("\n")
                 }
@@ -148,6 +173,22 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             .put("wearable", wearableWrites.last)
             .put("pending", activityWrites.pending + wearableWrites.pending)
             .put("failures", activityWrites.failures + wearableWrites.failures)
+    }
+
+
+    /** Add optional study metadata through the same bounded activity queue, never on the UI thread. */
+    private fun sessionField(value: String): String = "\"" + value.replace("\\", "\\\\")
+        .replace("\"", "\\\"").replace("\n", " ").replace("\r", " ") + "\""
+
+    fun transmitSession(id: String, person: String, study: JSONObject, hz: Long, sensors: Set<String>, epoch: Long) {
+        // Metadata is additive; existing measurements retain their fields and names.
+        val fields = listOf("project", "experiment", "site", "protocol").mapNotNull { key ->
+            study.optString(key).take(120).takeIf { it.isNotBlank() }?.let { "$key=" + sessionField(it) }
+        }
+        if (fields.isEmpty()) return
+        val metadata = Data(person_id = person, sessionId = id, epochMillis = epoch,
+            sessionFields = (fields + listOf("sampling_hz=${hz}i", "sensors=" + sessionField(sensors.sorted().joinToString(";")))).joinToString(","))
+        enqueue(activityQueue, activityWrites, listOf(metadata), "InfluxDB")
     }
 
     fun transmitData(data: List<Data>) {

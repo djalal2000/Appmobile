@@ -22,6 +22,37 @@ internal class CollectionPreferences(context: Context) {
     val wearable: String get() = prefs.getString("wearable", "wearable") ?: "wearable"
     val sensors: Set<String> get() = prefs.getStringSet("sensors", SENSOR_KEYS.toSet())?.toSet() ?: SENSOR_KEYS.toSet()
     val hasToken: Boolean get() = prefs.contains("token")
+    val hz: Int get() = prefs.getInt("hz", 50)
+    val interval: Int get() = prefs.getInt("interval", 10)
+    val project: String get() = prefs.getString("project", "") ?: ""
+    val experiment: String get() = prefs.getString("experiment", "") ?: ""
+    val site: String get() = prefs.getString("site", "") ?: ""
+    val protocol: String get() = prefs.getString("protocol", "") ?: ""
+    val vibration: Boolean get() = prefs.getBoolean("vibration", false)
+    fun saveAcquisition(hz: Int, interval: Int): Boolean = validAcquisition(hz, interval) &&
+        prefs.edit().putInt("hz", hz).putInt("interval", interval).commit()
+    fun saveStudy(project: String, experiment: String, site: String, protocol: String): Boolean =
+        listOf(project, experiment, site, protocol).all { it.length <= 120 && it.none(Char::isISOControl) } &&
+        prefs.edit().putString("project", project).putString("experiment", experiment)
+            .putString("site", site).putString("protocol", protocol).commit()
+    fun saveVibration(value: Boolean): Boolean = prefs.edit().putBoolean("vibration", value).commit()
+    fun exportSettings(): JSONObject = JSONObject().put("version", 1)
+        .put("hz", hz).put("interval", interval).put("sensors", JSONArray(sensors.toList()))
+        .put("project", project).put("experiment", experiment).put("site", site).put("protocol", protocol)
+        .put("vibration", vibration)
+    fun importSettings(input: JSONObject): Boolean = runCatching {
+        require(input.getInt("version") == 1)
+        val frequency = input.getInt("hz")
+        val seconds = input.getInt("interval")
+        val array = input.getJSONArray("sensors")
+        val keys = (0 until array.length()).map { array.getString(it) }.toSet()
+        val study = listOf("project", "experiment", "site", "protocol").associateWith { input.getString(it) }
+        require(validAcquisition(frequency, seconds) && validSensorSelection(keys))
+        require(study.values.all { it.length <= 120 && it.none(Char::isISOControl) })
+        prefs.edit().putInt("hz", frequency).putInt("interval", seconds)
+            .putStringSet("sensors", keys).putBoolean("vibration", input.getBoolean("vibration"))
+            .apply { study.forEach { (key, value) -> putString(key, value) } }.commit()
+    }.getOrDefault(false)
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getKey("pemesa_influx_v2", null) as? SecretKey)?.let { return it }
@@ -58,7 +89,11 @@ internal class CollectionPreferences(context: Context) {
         prefs.edit().putStringSet("sensors", keys.toSet()).commit()
     fun envelope(session: String): JSONObject {
         require(validSensorSelection(sensors))
+        require(validAcquisition(hz, interval))
         val result = JSONObject().put("session", session).put("sensors", JSONArray(sensors.toList()))
+            .put("hz", hz).put("interval", interval)
+            .put("study", JSONObject().put("project", project).put("experiment", experiment)
+                .put("site", site).put("protocol", protocol))
         if (custom) result.put("server", JSONObject().put("url", url).put("org", organization)
             .put("activity", activity).put("wearable", wearable).put("token", decrypt()))
         return result

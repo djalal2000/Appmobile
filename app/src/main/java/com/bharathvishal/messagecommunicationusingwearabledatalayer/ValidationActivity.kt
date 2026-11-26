@@ -29,7 +29,17 @@ class ValidationActivity : AppCompatActivity() {
     private val batteryExpiry = Runnable { showWatchBattery(null) }
     private val influxExpiry = Runnable { showInfluxStatus(null) }
 
+    private var lastAlertFailures = 0L
+
+    private fun optionalHapticAlert() {
+        if (CollectionPreferences(this).vibration) binding.root.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+    }
+
     private fun showInfluxStatus(status: InfluxWriteStatus?) {
+        if (status != null) {
+            if (status.failures > lastAlertFailures && isRecording) optionalHapticAlert()
+            lastAlertFailures = status.failures
+        }
         batteryUiHandler.removeCallbacks(influxExpiry)
         val text: String
         val color: String
@@ -156,6 +166,7 @@ class ValidationActivity : AppCompatActivity() {
                     Log.d("WearableConnection", "Watch connection: $isConnected, App open: $appOpen")
 
                     if (!wearableDeviceConnected && wasConnected && isRecording) {
+                        optionalHapticAlert()
                         Toast.makeText(
                             this@ValidationActivity,
                             commandText("Watch connection lost. Recording state unknown.", "Connexion perdue. État de l’enregistrement inconnu."),

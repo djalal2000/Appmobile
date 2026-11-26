@@ -90,12 +90,14 @@ class WearCommunicationManager(
     @Volatile private var paused = false
     private var sensorTimer: Timer? = null
     private val recordingLock = Any()
-    private val bufferSize = (SEND_INTERVAL_MS / SAMPLING_PERIOD_MS).toInt()
-    private val pendingSamples = SampleBatch<Data>(bufferSize)
+    private var samplingPeriodMs = SAMPLING_PERIOD_MS
+    private var pendingSamples = SampleBatch<Data>((SEND_INTERVAL_MS / SAMPLING_PERIOD_MS).toInt())
+    private var studyMetadata = org.json.JSONObject()
     private var recordingGeneration = 0L
 
     private val controlScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var startJob: Job? = null
+    private var diagnosticJob: Job? = null
     private var enabledSensors = SENSOR_KEYS.toSet()
     private val availableSensors = mutableSetOf<Int>()
     private val freshSensors = mutableSetOf<Int>()
@@ -181,12 +183,57 @@ class WearCommunicationManager(
                     }
                 }
 
+                "/pemesa/diagnostics-v1" -> receiveDiagnostics(messageEvent.sourceNodeId, messageStr)
                 commandPath -> receiveConfirmedCommand(messageEvent.sourceNodeId, messageStr)
                 MESSAGE_ITEM_RECEIVED_PATH -> handleMessagePayload(messageStr)
                 else -> Log.w(TAG, "⚠️ Path non reconnu: $path")
             }
         } catch (e: Exception) {
             Log.e(TAG, "💥 Erreur réception message", e)
+        }
+    }
+
+    private fun receiveDiagnostics(node: String, message: String) {
+        commandHandler.post {
+            val request = runCatching { org.json.JSONObject(message) }.getOrNull() ?: return@post
+            val id = request.optString("id")
+            if (runCatching { UUID.fromString(id) }.isFailure) return@post
+            if (diagnosticJob?.isActive == true) return@post
+            diagnosticJob = controlScope.launch {
+                val reply = org.json.JSONObject().put("id", id)
+                try {
+                    val manager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+                    val types = listOf(Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE, Sensor.TYPE_GRAVITY,
+                        Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_HEART_RATE,
+                        Sensor.TYPE_STEP_COUNTER, Sensor.TYPE_LIGHT, Sensor.TYPE_PRESSURE)
+                    val available = org.json.JSONArray()
+                    types.forEachIndexed { index, type ->
+                        val permission = when (type) {
+                            Sensor.TYPE_HEART_RATE -> ContextCompat.checkSelfPermission(context, Manifest.permission.BODY_SENSORS) == PackageManager.PERMISSION_GRANTED
+                            Sensor.TYPE_STEP_COUNTER -> android.os.Build.VERSION.SDK_INT < 29 ||
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+                            else -> true
+                        }
+                        if (manager.getDefaultSensor(type) != null && permission) available.put(SENSOR_KEYS[index])
+                    }
+                    available.put("fatigue")
+                    val battery = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                    val memory = android.app.ActivityManager.MemoryInfo()
+                    (context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(memory)
+                    reply.put("sensors", available)
+                        .put("battery", battery?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1)
+                        .put("lowMemory", memory.lowMemory).put("freeMb", memory.availMem / 1048576L)
+                        .put("writes", transmit.writeStatus())
+                    if (sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L) {
+                        reply.put("busy", true)
+                    } else {
+                        reply.put("probe", transmit.diagnose(request.optJSONObject("server")))
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { reply.put("error", "WATCH") }
+                Wearable.getMessageClient(context).sendMessage(node, "/pemesa/diagnostics-v1",
+                    reply.toString().toByteArray(StandardCharsets.UTF_8))
+            }
         }
     }
 
@@ -223,12 +270,17 @@ class WearCommunicationManager(
                             (0 until array.length()).map { array.getString(it) }.toSet()
                         }
                         val session = config.getString("session")
-                        if (!validSensorSelection(keys) || runCatching { UUID.fromString(session) }.isFailure ||
+                        val hz = config.optInt("hz", 50)
+                        val interval = config.optInt("interval", 10)
+                        if (!validAcquisition(hz, interval) || !validSensorSelection(keys) || runCatching { UUID.fromString(session) }.isFailure ||
                             !transmit.prepare(config.optJSONObject("server"))) {
                             reply("REJECTED")
                             return@launch
                         }
                         enabledSensors = keys
+                        samplingPeriodMs = 1000L / hz
+                        pendingSamples = SampleBatch(batchSizeFor(hz, interval))
+                        studyMetadata = config.optJSONObject("study") ?: org.json.JSONObject()
                         sessionId = session
                         reply(completedCommands.result(node, id) { executeConfirmedCommand(payload) })
                     } catch (cancelled: CancellationException) {
@@ -292,6 +344,8 @@ class WearCommunicationManager(
                 startRecording()
                 // Record the declared baseline even when it matches the stored value.
                 if ("fatigue" in enabledSensors) transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
+                transmit.transmitSession(sessionId ?: "", personID ?: "unknown", studyMetadata,
+                    1000L / samplingPeriodMs, enabledSensors, sessionEpoch)
             }
 
             "Stop" -> {
@@ -387,7 +441,7 @@ class WearCommunicationManager(
         lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
         pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
 
-        val samplingPeriodUs = (SAMPLING_PERIOD_MS * 1000).toInt()
+        val samplingPeriodUs = (samplingPeriodMs * 1000).toInt()
 
         availableSensors.clear()
         listOf("accelerometer" to accel, "gyroscope" to gyro, "gravity" to gravitySensor,
@@ -549,7 +603,7 @@ class WearCommunicationManager(
             val generation = ++recordingGeneration
             pendingSamples.clear()
 
-            sensorTimer = fixedRateTimer("sensorTimer", true, 100, SAMPLING_PERIOD_MS) {
+            sensorTimer = fixedRateTimer("sensorTimer", true, 100, samplingPeriodMs) {
                 synchronized(recordingLock) {
                     if (generation == recordingGeneration && !stop && !paused) {
                         val currentActivity = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"

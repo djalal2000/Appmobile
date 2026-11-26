@@ -83,14 +83,14 @@ internal fun SensorSettings(language: String) {
         t("Linear acceleration","Accélération linéaire"), t("Rotation vector","Vecteur de rotation"),
         t("Heart rate","Fréquence cardiaque"), t("Steps","Nombre de pas"), t("Light","Luminosité"),
         t("Pressure","Pression"), t("Subjective fatigue","Fatigue subjective"))
-    Text(t("Choose signals for the next session. Inertial sampling remains 50 Hz.",
-        "Choisissez les signaux de la prochaine session. Les données inertielles restent à 50 Hz."))
+    Text(t("Choose signals for the next session. Inertial sampling: ${prefs.hz} Hz.",
+        "Choisissez les signaux de la prochaine session. Fréquence inertielle : ${prefs.hz} Hz."))
     SENSOR_KEYS.forEachIndexed { index, key ->
         Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface) {
             Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(names[index], style = MaterialTheme.typography.bodyLarge)
-                    Text(if (index < 5) "50 Hz" else if (key == "fatigue") t("Manual","Manuel") else t("Sensor events","Événements du capteur"),
+                    Text(if (index < 5) "${prefs.hz} Hz" else if (key == "fatigue") t("Manual","Manuel") else t("Sensor events","Événements du capteur"),
                         style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = key in selected, enabled = !busy, onCheckedChange = {
