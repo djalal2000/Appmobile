@@ -66,6 +66,12 @@ class MainActivity : AppCompatActivity() {
         communicationManager.unregisterListeners()
     }
 
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        communicationManager.close()
+        super.onDestroy()
+    }
+
     private fun hasPermissions(): Boolean {
         return permissions.all {
             ActivityCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED

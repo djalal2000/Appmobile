@@ -199,6 +199,7 @@ class ValidationActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         communicator.registerListeners()
+        if (isRecording && !isPaused && !commandUncertain) startTimer()
         connectionMonitorJob?.cancel()
         connectionMonitorJob = lifecycleScope.launch {
             while (isActive) {
@@ -353,7 +354,7 @@ class ValidationActivity : AppCompatActivity() {
                 isRecording = true
                 isPaused = false
                 binding.pauseRecordingButton.text = localized("⏸ Pause")
-                startTime = System.currentTimeMillis()
+                startTime = android.os.SystemClock.elapsedRealtime()
                 startTimer()
 
                 Toast.makeText(this, localized("Recording started"), Toast.LENGTH_SHORT).show()
@@ -398,7 +399,7 @@ class ValidationActivity : AppCompatActivity() {
                 binding.pauseRecordingButton.text = localized("▶ Resume")
                 Toast.makeText(this, localized("Recording paused"), Toast.LENGTH_SHORT).show()
             } else {
-                startTime = System.currentTimeMillis() - getElapsedTimeFromText()
+                startTime = android.os.SystemClock.elapsedRealtime() - getElapsedTimeFromText()
                 startTimer()
                 setActivityButtonsEnabled(true)
                 binding.pauseRecordingButton.text = localized("⏸ Pause")
@@ -527,17 +528,18 @@ class ValidationActivity : AppCompatActivity() {
     }
 
     private fun startTimer() {
+        stopTimer()
         updateTimerRunnable = object : Runnable {
             override fun run() {
-                if (isRecording && !isPaused) {
-                    val elapsedTime = System.currentTimeMillis() - startTime
+                if (isRecording && !isPaused && !commandUncertain) {
+                    val elapsedTime = android.os.SystemClock.elapsedRealtime() - startTime
                     val seconds = (elapsedTime / 1000) % 60
                     val minutes = (elapsedTime / 60000) % 60
                     val hours = (elapsedTime / 3600000)
                     val milliseconds = elapsedTime % 1000
 
                     binding.timerTextView.text = String.format("%02d:%02d:%02d:%03d", hours, minutes, seconds, milliseconds)
-                    handler.postDelayed(this, 10)
+                    handler.postDelayed(this, 33)
                 }
             }
         }
@@ -546,6 +548,7 @@ class ValidationActivity : AppCompatActivity() {
 
     private fun stopTimer() {
         updateTimerRunnable?.let { handler.removeCallbacks(it) }
+        updateTimerRunnable = null
     }
 
     private fun updateConnectionStatus(isConnected: Boolean, appOpen: Boolean) {
@@ -681,7 +684,7 @@ class ValidationActivity : AppCompatActivity() {
             // Preserve the multicolor watch vector; keep the existing tint on other icons.
             itemIconTintList = null
             listOf(R.id.action_home, R.id.action_refresh_connection).forEach { id ->
-                val item = menu.findItem(id)
+                val item = menu.findItem(id) ?: return@forEach
                 val drawable = item.icon?.mutate()
                 drawable?.setTint(uiColor("#36566B"))
                 item.icon = drawable

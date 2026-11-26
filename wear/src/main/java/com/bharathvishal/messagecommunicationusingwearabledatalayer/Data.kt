@@ -54,28 +54,28 @@ data class Data(
         val fields = mutableListOf<String>()
 
         // Acceleration
-        acceX?.let { fields.add("acceX=$it") }
-        acceY?.let { fields.add("acceY=$it") }
-        acceZ?.let { fields.add("acceZ=$it") }
-        gyroX?.let { fields.add("gyroX=$it") }
-        gyroY?.let { fields.add("gyroY=$it") }
-        gyroZ?.let { fields.add("gyroZ=$it") }
+        acceX?.takeIf { it.isFinite() }?.let { fields.add("acceX=$it") }
+        acceY?.takeIf { it.isFinite() }?.let { fields.add("acceY=$it") }
+        acceZ?.takeIf { it.isFinite() }?.let { fields.add("acceZ=$it") }
+        gyroX?.takeIf { it.isFinite() }?.let { fields.add("gyroX=$it") }
+        gyroY?.takeIf { it.isFinite() }?.let { fields.add("gyroY=$it") }
+        gyroZ?.takeIf { it.isFinite() }?.let { fields.add("gyroZ=$it") }
 
         // Gravity
-        gravityX?.let { fields.add("gravityX=$it") }
-        gravityY?.let { fields.add("gravityY=$it") }
-        gravityZ?.let { fields.add("gravityZ=$it") }
+        gravityX?.takeIf { it.isFinite() }?.let { fields.add("gravityX=$it") }
+        gravityY?.takeIf { it.isFinite() }?.let { fields.add("gravityY=$it") }
+        gravityZ?.takeIf { it.isFinite() }?.let { fields.add("gravityZ=$it") }
 
         // Linear acceleration
-        linAccX?.let { fields.add("linAccX=$it") }
-        linAccY?.let { fields.add("linAccY=$it") }
-        linAccZ?.let { fields.add("linAccZ=$it") }
+        linAccX?.takeIf { it.isFinite() }?.let { fields.add("linAccX=$it") }
+        linAccY?.takeIf { it.isFinite() }?.let { fields.add("linAccY=$it") }
+        linAccZ?.takeIf { it.isFinite() }?.let { fields.add("linAccZ=$it") }
 
         // Rotation vector
-        rotX?.let { fields.add("rotX=$it") }
-        rotY?.let { fields.add("rotY=$it") }
-        rotZ?.let { fields.add("rotZ=$it") }
-        rotW?.let { fields.add("rotW=$it") }
+        rotX?.takeIf { it.isFinite() }?.let { fields.add("rotX=$it") }
+        rotY?.takeIf { it.isFinite() }?.let { fields.add("rotY=$it") }
+        rotZ?.takeIf { it.isFinite() }?.let { fields.add("rotZ=$it") }
+        rotW?.takeIf { it.isFinite() }?.let { fields.add("rotW=$it") }
 
         if (fields.isEmpty()) return ""
 
@@ -99,7 +99,7 @@ data class Data(
 
         val lines = mutableListOf<String>()
 
-        bpm?.toFloatOrNull()?.let {
+        bpm?.toFloatOrNull()?.takeIf { it.isFinite() }?.let {
             lines.add("heart_rate,person_id=$safePersonId bpm=$it $timestampMs")
         }
 
@@ -112,8 +112,8 @@ data class Data(
             lines.add("steps,person_id=$safePersonId steps=$steps $timestampMs")
         }
 
-        light?.let { lines.add("light,person_id=$safePersonId lux=$it $timestampMs") }
-        pressure?.let { lines.add("pressure,person_id=$safePersonId hPa=$it $timestampMs") }
+        light?.takeIf { it.isFinite() }?.let { lines.add("light,person_id=$safePersonId lux=$it $timestampMs") }
+        pressure?.takeIf { it.isFinite() }?.let { lines.add("pressure,person_id=$safePersonId hPa=$it $timestampMs") }
 
         return lines.joinToString("\n")
     }

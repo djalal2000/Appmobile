@@ -85,7 +85,7 @@ class WearCommunicationManager(
     private var stepCount = 0
     private var lastStepCount: Int? = null
 
-    @Volatile private var stop = false
+    @Volatile private var stop = true
     @Volatile private var paused = false
     private var sensorTimer: Timer? = null
     private val recordingLock = Any()
@@ -93,7 +93,15 @@ class WearCommunicationManager(
     private val pendingSamples = ArrayList<Data>(bufferSize)
     private var recordingGeneration = 0L
 
-    private val transmit = TransmissionService()
+    private val transmit = TransmissionService(
+        context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+    )
+
+    fun close() {
+        commandHandler.removeCallbacksAndMessages(null)
+        stopRecording()
+        transmit.close()
+    }
 
     fun registerListeners() {
         Log.d(TAG, "🔌 Registering listeners")
@@ -365,14 +373,29 @@ class WearCommunicationManager(
             lightSensor, pressureSensor,
             linac, rotat, stepCounter
         ).forEach { sensor ->
-            sensor?.let { sensorManager.registerListener(sensorListener, it, samplingPeriodUs) }
+            sensor?.let {
+                try {
+                    if (!sensorManager.registerListener(sensorListener, it, samplingPeriodUs)) {
+                        Log.w(TAG, "Sensor registration failed: ${it.type}")
+                    }
+                } catch (error: SecurityException) {
+                    Log.w(TAG, "Sensor permission unavailable: ${it.type}", error)
+                }
+            }
         }
     }
 
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent?) {
             event?.let {
-                val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
+                val required = when (it.sensor.type) {
+                    Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE, Sensor.TYPE_GRAVITY,
+                    Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR -> 3
+                    else -> 1
+                }
+                if (it.values.size < required || it.values.take(required).any { value -> !value.isFinite() }) return
+                synchronized(recordingLock) {
+                if (stop) return
                 when (it.sensor.type) {
 
                     Sensor.TYPE_HEART_RATE -> {
@@ -389,14 +412,12 @@ class WearCommunicationManager(
                         xaccel = it.values[0]
                         yaccel = it.values[1]
                         zaccel = it.values[2]
-                        Log.d(TAG, "📈 Accéléro: x=$xaccel y=$yaccel z=$zaccel")
                     }
 
                     Sensor.TYPE_GYROSCOPE -> {
                         xgyro = it.values[0]
                         ygyro = it.values[1]
                         zgyro = it.values[2]
-                        Log.d(TAG, "🌀 Gyro: x=$xgyro y=$ygyro z=$zgyro")
                     }
 
                     Sensor.TYPE_STEP_COUNTER -> {
@@ -435,7 +456,6 @@ class WearCommunicationManager(
 
                     Sensor.TYPE_PRESSURE -> {
                         pressureHpa = it.values[0]
-                        Log.d(TAG, "🌡️ Pressure: $pressureHpa hPa")
                         transmitSensorData(pressure = pressureHpa)
                     }
 
@@ -443,14 +463,12 @@ class WearCommunicationManager(
                         xGravity = it.values[0]
                         yGravity = it.values[1]
                         zGravity = it.values[2]
-                        Log.d(TAG, "Gravity: x=$xGravity y=$yGravity z=$zGravity")
                     }
 
                     Sensor.TYPE_LINEAR_ACCELERATION -> {
                         xLinAcc = it.values[0]
                         yLinAcc = it.values[1]
                         zLinAcc = it.values[2]
-                        Log.d(TAG, "Acc Linear: x=$xLinAcc y=$yLinAcc z=$zLinAcc")
                     }
 
                     Sensor.TYPE_ROTATION_VECTOR -> {
@@ -458,9 +476,9 @@ class WearCommunicationManager(
                         yRot = it.values[1]
                         zRot = it.values[2]
                         wRot = if (it.values.size > 3) it.values[3] else 0f
-                        Log.d(TAG, "Rotation Vector: x=$xRot y=$yRot z=$zRot w=$wRot")
                     }
                     else -> Log.w(TAG, "⚠️ Sensor not managed: ${it.sensor.type}")
+                }
                 }
             }
         }
@@ -489,8 +507,15 @@ class WearCommunicationManager(
 
     private fun startRecording() {
         synchronized(recordingLock) {
+            if (sensorTimer != null) return
             stop = false; paused = false
-            setupSensors()
+            try {
+                setupSensors()
+            } catch (error: Exception) {
+                stop = true
+                if (::sensorManager.isInitialized) sensorManager.unregisterListener(sensorListener)
+                throw error
+            }
             val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
             val generation = ++recordingGeneration
             pendingSamples.clear()

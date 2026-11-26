@@ -3,6 +3,11 @@ package com.bharathvishal.messagecommunicationusingwearabledatalayer
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import java.io.IOException
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -11,7 +16,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import java.util.concurrent.TimeUnit
 
-class TransmissionService {
+class TransmissionService(private val debugLogs: Boolean = false) {
 
     private val token = "n43TH_16XPvYcoHhKqtt5-r-ZxsYwdCAE1dCnoRf3ssQimb6Pf7rFDotYiomKeHPOTolhMQ0hjhGCpCaB3wSJA=="
     private val org = "ISIS - Université Champollion"
@@ -21,7 +26,8 @@ class TransmissionService {
 
 
     private val loggingInterceptor = HttpLoggingInterceptor { message -> Log.d("OkHttp", message) }.apply {
-        level = HttpLoggingInterceptor.Level.BODY
+        redactHeader("Authorization")
+        level = if (debugLogs) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
     }
 
     private val client = OkHttpClient.Builder()
@@ -35,6 +41,7 @@ class TransmissionService {
         }
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(65, TimeUnit.SECONDS)
         .build()
 
     private val retrofit = Retrofit.Builder()
@@ -53,22 +60,62 @@ class TransmissionService {
     private val writeLock = Any()
     private val activityWrites = BucketWrites()
     private val wearableWrites = BucketWrites()
+    // Bound memory during outages. Independent FIFO workers preserve bucket ordering.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val activityQueue = Channel<List<Data>>(32)
+    private val wearableQueue = Channel<List<Data>>(512)
 
-    private fun beginWrite(stats: BucketWrites) = synchronized(writeLock) {
-        stats.pending++
-    }
-
-    private fun finishWrite(stats: BucketWrites, accepted: Boolean?) {
-        synchronized(writeLock) {
-            stats.pending--
-            if (accepted != null) {
-                stats.last = if (accepted) "OK" else "ERROR"
-                if (!accepted) stats.failures++
+    init {
+        scope.launch {
+            for (samples in activityQueue) {
+                writeBucket(bucketActivity, activityWrites, "InfluxDB", "LineProtocol", 1) {
+                    samples.flatMap { sample ->
+                        listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
+                            .filter { it.isNotBlank() }
+                    }.joinToString("\n")
+                }
+            }
+        }
+        scope.launch {
+            for (first in wearableQueue) {
+                val submissions = mutableListOf(first)
+                // Coalesce only already queued readings, with no extra acquisition delay.
+                for (i in 1..15) {
+                    val next = wearableQueue.tryReceive().getOrNull() ?: break
+                    submissions.add(next)
+                }
+                writeBucket(bucketWearable, wearableWrites, "InfluxDB_Wearable",
+                    "LineProtocolWearable", submissions.size) {
+                    submissions.flatten().map { it.toLineProtocolWearable() }
+                        .filter { it.isNotBlank() }.joinToString("\n")
+                }
             }
         }
     }
 
-    /** Report completed HTTP writes independently of the wearable control channel. */
+    private fun enqueue(queue: Channel<List<Data>>, stats: BucketWrites,
+                        data: List<Data>, logTag: String) {
+        synchronized(writeLock) {
+            stats.pending++
+            if (queue.trySend(data).isFailure) {
+                stats.pending--
+                stats.failures++
+                stats.last = "ERROR"
+                Log.e(logTag, "Write queue full or closed; submission not accepted.")
+            }
+        }
+    }
+
+    private fun finishWrite(stats: BucketWrites, accepted: Boolean?, submissions: Int) {
+        synchronized(writeLock) {
+            stats.pending -= submissions.toLong()
+            if (accepted != null) {
+                stats.last = if (accepted) "OK" else "ERROR"
+                if (!accepted) stats.failures += submissions.toLong()
+            }
+        }
+    }
+
     fun writeStatus(): org.json.JSONObject = synchronized(writeLock) {
         org.json.JSONObject()
             .put("activity", activityWrites.last)
@@ -79,73 +126,70 @@ class TransmissionService {
 
     fun transmitData(data: List<Data>) {
         if (data.isEmpty()) return
-        // Register both scheduled writes before the asynchronous work starts.
-        synchronized(writeLock) {
-            activityWrites.pending++
-            wearableWrites.pending++
-        }
-        CoroutineScope(Dispatchers.IO).launch {
-            writeBucket(bucketActivity, activityWrites, "InfluxDB", "LineProtocol") {
-                data.flatMap { sample ->
-                    listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
-                        .filter { it.isNotBlank() }
-                }.joinToString("\n")
-            }
-            writeBucket(bucketWearable, wearableWrites, "InfluxDB_Wearable", "LineProtocolWearable") {
-                wearableLines(data)
-            }
-        }
+        enqueue(activityQueue, activityWrites, data, "InfluxDB")
+        enqueue(wearableQueue, wearableWrites, data, "InfluxDB_Wearable")
     }
 
     fun transmitWearableData(data: List<Data>) {
-        if (data.isEmpty()) return
-        beginWrite(wearableWrites)
-        CoroutineScope(Dispatchers.IO).launch {
-            writeBucket(bucketWearable, wearableWrites, "InfluxDB_Wearable", "LineProtocolWearable") {
-                wearableLines(data)
-            }
-        }
+        if (data.isNotEmpty()) enqueue(wearableQueue, wearableWrites, data, "InfluxDB_Wearable")
     }
 
-    private fun wearableLines(data: List<Data>): String =
-        data.map { it.toLineProtocolWearable() }.filter { it.isNotBlank() }.joinToString("\n")
+    /** Stop accepting work, then drain the existing RAM queues. */
+    fun close() {
+        activityQueue.close()
+        wearableQueue.close()
+    }
 
     private suspend fun writeBucket(
-        bucket: String,
-        stats: BucketWrites,
-        logTag: String,
-        lineTag: String,
-        buildLines: () -> String
+        bucket: String, stats: BucketWrites, logTag: String, lineTag: String,
+        submissions: Int, buildLines: () -> String
     ) {
         var accepted: Boolean? = null
         try {
             val lineProtocol = buildLines()
             if (lineProtocol.isBlank()) return
-
+            // A retry must preserve the original payload and timestamps.
             val requestBody = lineProtocol.toRequestBody("text/plain".toMediaType())
-            Log.d(lineTag, "➡️ $lineProtocol")
-            val response = influxService.sendLineProtocol(
-                org = org,
-                bucket = bucket,
-                precision = "ms",
-                body = requestBody
-            )
-            accepted = response.isSuccessful
-            Log.d(logTag, "Response code: ${response.code()}")
-            Log.d(logTag, "Response message: ${response.message()}")
-            Log.d(logTag, "Response isSuccessful: ${response.isSuccessful}")
-            if (response.isSuccessful) {
-                Log.d(logTag, "Write accepted by InfluxDB.")
-            } else {
-                Log.e(logTag, "InfluxDB write rejected: ${response.code()} - ${response.message()}")
+            if (debugLogs) Log.d(lineTag, "➡️ $lineProtocol")
+            for (attempt in 0..1) {
+                try {
+                    val response = influxService.sendLineProtocol(
+                        org = org, bucket = bucket, precision = "ms", body = requestBody
+                    )
+                    val code = response.code()
+                    val successful = response.isSuccessful
+                    val retryHeader = response.headers()["Retry-After"]
+                    val retrySeconds = retryHeader?.toLongOrNull()
+                    response.body()?.close()
+                    response.errorBody()?.close()
+                    Log.d(logTag, "Response code: $code")
+                    Log.d(logTag, "Response isSuccessful: $successful")
+                    if (successful) {
+                        accepted = true
+                        Log.d(logTag, "Write accepted by InfluxDB.")
+                        return
+                    }
+                    val transient = code == 408 || code == 429 || code in 500..599
+                    if (attempt == 0 && transient &&
+                        (retryHeader == null || retrySeconds != null && retrySeconds in 0L..30L)) {
+                        delay(maxOf(1000L, (retrySeconds ?: 0L) * 1000L))
+                    } else {
+                        accepted = false
+                        Log.e(logTag, "InfluxDB write rejected: $code")
+                        return
+                    }
+                } catch (error: IOException) {
+                    if (attempt == 0) delay(1000L) else throw error
+                }
             }
-            response.body()?.close()
-            response.errorBody()?.close()
+        } catch (cancelled: CancellationException) {
+            accepted = false
+            throw cancelled
         } catch (error: Exception) {
             accepted = false
             Log.e(logTag, "InfluxDB write failed", error)
         } finally {
-            finishWrite(stats, accepted)
+            finishWrite(stats, accepted, submissions)
         }
     }
 }
