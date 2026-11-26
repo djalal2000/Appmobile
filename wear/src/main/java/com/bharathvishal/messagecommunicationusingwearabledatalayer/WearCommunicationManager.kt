@@ -92,6 +92,12 @@ class WearCommunicationManager(
     private val recordingLock = Any()
     private var samplingPeriodMs = SAMPLING_PERIOD_MS
     private var pendingSamples = SampleBatch<Data>((SEND_INTERVAL_MS / SAMPLING_PERIOD_MS).toInt())
+    private val pendingWearable = WearableBatch<Data>()
+    private var currentActivityLabel = "Unlabeled activity"
+    private var sessionPersonId = "unknown"
+    private val wearableFlush = Runnable { synchronized(recordingLock) { flushWearableLocked() } }
+    private val sensorUiRefresh = Runnable { sensorUiScheduled = false; if (!stop && !paused) updateUI() }
+    private var sensorUiScheduled = false
     private var studyMetadata = org.json.JSONObject()
     private var recordingGeneration = 0L
 
@@ -191,7 +197,7 @@ class WearCommunicationManager(
                 INFLUX_STATUS_PATH -> {
                     if (messageStr.length == 36 &&
                         runCatching { UUID.fromString(messageStr) }.isSuccess) {
-                        val snapshot = transmit.writeStatus().put("id", messageStr)
+                        val snapshot = combinedWriteStatus().put("id", messageStr)
                         Wearable.getMessageClient(context)
                             .sendMessage(messageEvent.sourceNodeId, INFLUX_STATUS_PATH,
                                 snapshot.toString().toByteArray(StandardCharsets.UTF_8))
@@ -207,6 +213,12 @@ class WearCommunicationManager(
         } catch (e: Exception) {
             Log.e(TAG, "💥 Erreur réception message", e)
         }
+    }
+
+    private fun combinedWriteStatus(): org.json.JSONObject = synchronized(recordingLock) {
+        val status = transmit.writeStatus()
+        // Include the local, not-yet-submitted wearable batch in the pending status.
+        status.put("pending", status.getLong("pending") + if (pendingWearable.size > 0) 1L else 0L)
     }
 
     private fun associationBusy(): Boolean = sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L
@@ -294,7 +306,7 @@ class WearCommunicationManager(
                     reply.put("sensors", available)
                         .put("battery", battery?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1)
                         .put("lowMemory", memory.lowMemory).put("freeMb", memory.availMem / 1048576L)
-                        .put("writes", transmit.writeStatus())
+                        .put("writes", combinedWriteStatus())
                     if (request.optBoolean("journalOnly")) {
                         reply.put("journalOnly", true)
                     } else if (sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L) {
@@ -415,7 +427,7 @@ class WearCommunicationManager(
         val userActivity = messageMap["Activity"]
         val action = messageMap["Action"]
         val fatigueLevel = messageMap["FatigueLevel"]
-        Log.d(TAG, "🟡 FatigueLevel received: $fatigueLevel")
+        // Do not log participant values.
 
         when (action) {
             "Start" -> {
@@ -443,7 +455,7 @@ class WearCommunicationManager(
             }
 
             "Pause" -> {
-                synchronized(recordingLock) { if (!paused) segmentEnd = android.os.SystemClock.elapsedRealtime(); paused = true; lastStepCount = null; freshSensors.clear() }
+                synchronized(recordingLock) { if (!paused) segmentEnd = android.os.SystemClock.elapsedRealtime(); paused = true; lastStepCount = null; freshSensors.clear(); flushWearableLocked() }
                 HealthJournal.add(HealthCode.PAUSE_OK)
                 updateUI("⏸️ En pause.")
             }
@@ -476,8 +488,13 @@ class WearCommunicationManager(
             }
         }
 
-        if (userActivity != null && userActivity != sharedPref.getString("userActivity", "Unlabeled activity")) {
-            sharedPref.edit().putString("userActivity", userActivity).apply()
+        if (userActivity != null) {
+            synchronized(recordingLock) {
+                if (userActivity != currentActivityLabel) {
+                    sharedPref.edit().putString("userActivity", userActivity).apply()
+                    currentActivityLabel = userActivity
+                }
+            }
         }
     }
 
@@ -487,7 +504,16 @@ class WearCommunicationManager(
             if (connected) "📶 Mobile connected" else "❌ Mobile disconnected"
     }
 
+    private fun requestSensorUiRefresh() {
+        if (!sensorUiScheduled) {
+            sensorUiScheduled = true
+            commandHandler.postDelayed(sensorUiRefresh, 1000L)
+        }
+    }
+
     private fun updateUI(prefix: String? = null) {
+        commandHandler.removeCallbacks(sensorUiRefresh)
+        sensorUiScheduled = false
         val personID = sharedPref.getString("personID", "unknown")
         val userProfession = sharedPref.getString("userProfession", "unknown")
         val userActivity = sharedPref.getString("userActivity", "Unlabeled activity")
@@ -561,7 +587,7 @@ class WearCommunicationManager(
                     Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR -> 3
                     else -> 1
                 }
-                if (it.values.size < required || it.values.take(required).any { value -> !value.isFinite() }) {
+                if (!finiteSensorValues(it.values, required)) {
                     val now = android.os.SystemClock.elapsedRealtime()
                     if (!lastReportedInvalid || now - lastInvalidNotice >= 10000L) {
                         lastReportedInvalid = true; lastInvalidNotice = now
@@ -572,16 +598,15 @@ class WearCommunicationManager(
                 synchronized(recordingLock) {
                 if (stop || paused || it.sensor.type !in availableSensors) return
                 freshSensors.add(it.sensor.type)
-                val eventTime = System.currentTimeMillis() - ((android.os.SystemClock.elapsedRealtimeNanos() - it.timestamp).coerceAtLeast(0L) / 1000000L)
+                // Only event-driven measurements need this conversion; inertial samples use the timer timestamp.
                 when (it.sensor.type) {
 
                     Sensor.TYPE_HEART_RATE -> {
                         val newBpm = it.values[0].toInt().toString()
-                        Log.d(TAG, "❤️ Heart rate: $newBpm BPM")
                         if (newBpm != hvalue) {
                             hvalue = newBpm
-                            transmitSensorData(bpm = hvalue, eventTime = eventTime)
-                            updateUI()
+                            transmitSensorData(bpm = hvalue, eventTime = sensorEpochMillis(it.timestamp))
+                            requestSensorUiRefresh()
                         }
                     }
 
@@ -603,36 +628,34 @@ class WearCommunicationManager(
                         if (previousCount == null) {
                             // Establish the session baseline from an actual sensor event.
                             lastStepCount = totalSteps
-                            transmitSensorData(steps = stepCount, eventTime = eventTime)
+                            transmitSensorData(steps = stepCount, eventTime = sensorEpochMillis(it.timestamp))
                         } else {
                             val newSteps = totalSteps - previousCount
                             if (newSteps > 0) {
                                 stepCount += newSteps
                                 lastStepCount = totalSteps
-                                transmitSensorData(steps = stepCount, eventTime = eventTime)
-                                updateUI()
+                                transmitSensorData(steps = stepCount, eventTime = sensorEpochMillis(it.timestamp))
+                                requestSensorUiRefresh()
                             } else if (newSteps < 0) {
                                 // Re-establish the baseline if the hardware counter resets.
                                 lastStepCount = totalSteps
                             }
                         }
-                        Log.d(TAG, "👣 Step counter: total=$totalSteps, depuis début=$stepCount")
                     }
 
                     Sensor.TYPE_LIGHT -> {
                         val newLux = it.values[0]
-                        Log.d(TAG, "💡 Light: $newLux lx")
                         if (newLux != lastLightLux) {
                             lastLightLux = newLux
                             lightLux = newLux
-                            transmitSensorData(light = lightLux, eventTime = eventTime)
-                            updateUI()
+                            transmitSensorData(light = lightLux, eventTime = sensorEpochMillis(it.timestamp))
+                            requestSensorUiRefresh()
                         }
                     }
 
                     Sensor.TYPE_PRESSURE -> {
                         pressureHpa = it.values[0]
-                        transmitSensorData(pressure = pressureHpa, eventTime = eventTime)
+                        transmitSensorData(pressure = pressureHpa, eventTime = sensorEpochMillis(it.timestamp))
                     }
 
                     Sensor.TYPE_GRAVITY -> {
@@ -662,6 +685,16 @@ class WearCommunicationManager(
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
+    private fun sensorEpochMillis(sensorNanos: Long): Long =
+        System.currentTimeMillis() - ((android.os.SystemClock.elapsedRealtimeNanos() - sensorNanos).coerceAtLeast(0L) / 1000000L)
+
+    // Called only with recordingLock held (including the fatigue command path).
+    private fun flushWearableLocked() {
+        commandHandler.removeCallbacks(wearableFlush)
+        val batch = pendingWearable.drain()
+        if (batch.isNotEmpty()) transmit.transmitWearableData(batch)
+    }
+
     private fun transmitSensorData(
         bpm: String? = null,
         light: Float? = null,
@@ -670,16 +703,21 @@ class WearCommunicationManager(
         fatigueLevel: String? = null,
         eventTime: Long = System.currentTimeMillis()
     ) {
-        val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
-        val data = Data(
-            person_id = personID,
-            bpm = bpm,
-            light = light,
-            pressure = pressure,
-            steps = steps,
-            fatigueLevel = fatigueLevel, epochMillis = eventTime, sessionId = sessionId, watchId = watchId
-        )
-        transmit.transmitWearableData(listOf(data))
+        synchronized(recordingLock) {
+            if (stop || paused) return
+            val data = Data(
+                timestamp = "", // Numeric epochMillis is authoritative; skip unused date formatting.
+                person_id = sessionPersonId,
+                bpm = bpm,
+                light = light,
+                pressure = pressure,
+                steps = steps,
+                fatigueLevel = fatigueLevel, epochMillis = eventTime, sessionId = sessionId, watchId = watchId
+            )
+            val first = pendingWearable.size == 0
+            if (pendingWearable.add(data)) flushWearableLocked()
+            else if (first) commandHandler.postDelayed(wearableFlush, 1000L)
+        }
     }
 
     private fun startRecording() {
@@ -701,15 +739,17 @@ class WearCommunicationManager(
                 if (::sensorManager.isInitialized) sensorManager.unregisterListener(sensorListener)
                 throw error
             }
-            val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
+            sessionPersonId = sharedPref.getString("personID", "unknown") ?: "unknown"
+            currentActivityLabel = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
+            val personID = sessionPersonId
             val generation = ++recordingGeneration
             pendingSamples.clear()
 
             sensorTimer = fixedRateTimer("sensorTimer", true, 100, samplingPeriodMs) {
                 synchronized(recordingLock) {
                     if (generation == recordingGeneration && !stop && !paused) {
-                        val currentActivity = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
                         val data = Data(
+                            timestamp = "", // epochMillis is already supplied below.
                             person_id = personID,
                             acceX = xaccel.takeIf { Sensor.TYPE_ACCELEROMETER in freshSensors },
                             acceY = yaccel.takeIf { Sensor.TYPE_ACCELEROMETER in freshSensors },
@@ -727,7 +767,7 @@ class WearCommunicationManager(
                             rotY = yRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             rotZ = zRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             rotW = wRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
-                            label = currentActivity,
+                            label = currentActivityLabel,
                             sessionId = sessionId, sequence = sequence++, watchId = watchId,
                             epochMillis = sessionEpoch + (android.os.SystemClock.elapsedRealtime() - sessionElapsed)
                         )
@@ -753,8 +793,11 @@ class WearCommunicationManager(
             stop = true; paused = false
             recordingGeneration++
             sensorTimer?.cancel(); sensorTimer = null
-            // Submit the partial batch before acknowledging the stop command.
+            // Submit both partial batches before acknowledging the stop command.
             submitPendingSamples()
+            flushWearableLocked()
+            commandHandler.removeCallbacks(sensorUiRefresh)
+            sensorUiScheduled = false
         }
         // Refresh or stop may arrive before the first recording starts.
         if (::sensorManager.isInitialized) {

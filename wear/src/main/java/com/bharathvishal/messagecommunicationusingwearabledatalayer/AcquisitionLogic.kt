@@ -59,3 +59,22 @@ internal fun recordingStateMatches(action: String?, timerRunning: Boolean, stopp
         "Stop", "Refresh" -> !timerRunning && stopped
         else -> true
     }
+
+/** Validate without allocating a temporary collection at each hardware event. */
+internal fun finiteSensorValues(values: FloatArray, required: Int): Boolean {
+    if (required < 1 || values.size < required) return false
+    for (index in 0 until required) if (!values[index].isFinite()) return false
+    return true
+}
+
+/** Bounded wearable batching policy. Call under the recording lock. */
+internal class WearableBatch<T>(private val capacity: Int = 64) {
+    private val batch = SampleBatch<T>(capacity)
+    val size: Int get() = batch.size
+    fun add(value: T): Boolean {
+        check(!batch.isFull())
+        batch.add(value)
+        return batch.isFull()
+    }
+    fun drain(): List<T> = if (batch.size == 0) emptyList() else batch.drain()
+}

@@ -105,6 +105,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     private class BucketWrites {
         var pending = 0L
         var failures = 0L
+        var pendingRecords = 0L
         var last = "NONE"
     }
 
@@ -115,52 +116,70 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activityQueue = Channel<List<Data>>(32)
     private val wearableQueue = Channel<List<Data>>(512)
+    private val maxWearableRecords = 2048L
 
     init {
         scope.launch {
             for (samples in activityQueue) {
-                writeBucket(destination.activity, activityWrites, "InfluxDB", "LineProtocol", 1) {
-                    samples.flatMap { sample ->
-                        if (sample.sessionFields != null) listOf(sample.toSessionProtocol()) else listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
-                            .filter { it.isNotBlank() }
-                    }.joinToString("\n")
+                writeBucket(destination.activity, activityWrites, "InfluxDB", samples.size.toLong(), 1) {
+                    buildString {
+                        for (sample in samples) {
+                            if (sample.sessionFields != null) {
+                                appendProtocolLine(sample.toSessionProtocol())
+                            } else {
+                                appendProtocolLine(sample.toLineProtocol())
+                                appendProtocolLine(sample.toLineProtocolActivity())
+                            }
+                        }
+                    }
                 }
             }
         }
         scope.launch {
             for (first in wearableQueue) {
                 val submissions = mutableListOf(first)
-                // Coalesce only already queued readings, with no extra acquisition delay.
+                // Coalesce ready batches without waiting again; acquisition already groups them.
                 for (i in 1..15) {
                     val next = wearableQueue.tryReceive().getOrNull() ?: break
                     submissions.add(next)
                 }
                 writeBucket(destination.wearable, wearableWrites, "InfluxDB_Wearable",
-                    "LineProtocolWearable", submissions.size) {
-                    submissions.flatten().map { it.toLineProtocolWearable() }
-                        .filter { it.isNotBlank() }.joinToString("\n")
+                    submissions.sumOf { it.size.toLong() }, submissions.size) {
+                    buildString {
+                        for (batch in submissions) for (sample in batch) appendProtocolLine(sample.toLineProtocolWearable())
+                    }
                 }
             }
         }
     }
 
+    private fun StringBuilder.appendProtocolLine(line: String) {
+        if (line.isBlank()) return
+        if (isNotEmpty()) append('\n')
+        append(line)
+    }
+
     private fun enqueue(queue: Channel<List<Data>>, stats: BucketWrites,
                         data: List<Data>, logTag: String) {
         synchronized(writeLock) {
-            stats.pending++
-            if (queue.trySend(data).isFailure) {
-                stats.pending--
+            val records = data.size.toLong()
+            if ((stats === wearableWrites && stats.pendingRecords + records > maxWearableRecords) ||
+                queue.trySend(data).isFailure) {
                 stats.failures++
                 stats.last = "ERROR"
                 HealthJournal.add(HealthCode.QUEUE_FULL, data.size.toLong())
                 Log.e(logTag, "Write queue full or closed; submission not accepted.")
+            } else {
+                stats.pending++
+                stats.pendingRecords += records
             }
         }
     }
 
-    private fun finishWrite(stats: BucketWrites, accepted: Boolean?, submissions: Int) {
+    private fun finishWrite(stats: BucketWrites, accepted: Boolean?, submissions: Int, records: Long) {
         synchronized(writeLock) {
             stats.pending -= submissions.toLong()
+            stats.pendingRecords -= records
             if (accepted != null) {
                 if (accepted && stats.last == "ERROR") HealthJournal.add(HealthCode.WRITE_RECOVERED)
                 stats.last = if (accepted) "OK" else "ERROR"
@@ -175,6 +194,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             .put("wearable", wearableWrites.last)
             .put("pending", activityWrites.pending + wearableWrites.pending)
             .put("failures", activityWrites.failures + wearableWrites.failures)
+            .put("pendingWearableRecords", wearableWrites.pendingRecords)
     }
 
 
@@ -188,15 +208,15 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             study.optString(key).take(120).takeIf { it.isNotBlank() }?.let { "$key=" + sessionField(it) }
         }
         if (fields.isEmpty()) return
-        val metadata = Data(person_id = person, sessionId = id, epochMillis = epoch, watchId = watchId,
+        val metadata = Data(timestamp = "", person_id = person, sessionId = id, epochMillis = epoch, watchId = watchId,
             sessionFields = (fields + listOf("sampling_hz=${hz}i", "sensors=" + sessionField(sensors.sorted().joinToString(";")))).joinToString(","))
         enqueue(activityQueue, activityWrites, listOf(metadata), "InfluxDB")
     }
 
     fun transmitData(data: List<Data>) {
         if (data.isEmpty()) return
+        // Inertial samples no longer carry any wearable measurements.
         enqueue(activityQueue, activityWrites, data, "InfluxDB")
-        enqueue(wearableQueue, wearableWrites, data, "InfluxDB_Wearable")
     }
 
     fun transmitWearableData(data: List<Data>) {
@@ -210,7 +230,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     }
 
     private suspend fun writeBucket(
-        bucket: String, stats: BucketWrites, logTag: String, lineTag: String,
+        bucket: String, stats: BucketWrites, logTag: String, records: Long,
         submissions: Int, buildLines: () -> String
     ) {
         var accepted: Boolean? = null
@@ -230,11 +250,10 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                     val retryHeader = response.headers()["Retry-After"]
                     response.body()?.close()
                     response.errorBody()?.close()
-                    Log.d(logTag, "Response code: $code")
-                    Log.d(logTag, "Response isSuccessful: $successful")
+                    if (debugLogs) Log.d(logTag, "Response code: $code")
                     if (successful) {
                         accepted = true
-                        Log.d(logTag, "Write accepted by InfluxDB.")
+                        if (debugLogs) Log.d(logTag, "Write accepted by InfluxDB.")
                         return
                     }
                     val retryDelay = retryDelayMs(code, retryHeader, attempt)
@@ -259,7 +278,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             HealthJournal.add(HealthCode.WRITE_FAILED)
             Log.e(logTag, "InfluxDB write failed: " + error.javaClass.simpleName)
         } finally {
-            finishWrite(stats, accepted, submissions)
+            finishWrite(stats, accepted, submissions, records)
         }
     }
 }
