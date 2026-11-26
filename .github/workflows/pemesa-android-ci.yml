@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Check source for embedded credentials
+        run: python3 tools/check_credentials.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

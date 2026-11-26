@@ -93,7 +93,7 @@ internal object ConfigurationSync {
                 url = server?.optString("url") ?: prefs.url, org = server?.optString("org") ?: prefs.organization,
                 activity = server?.optString("activity") ?: prefs.activity,
                 wearable = server?.optString("wearable") ?: prefs.wearable,
-                tokenConfigured = if (prefs.custom) prefs.hasToken else true
+                tokenConfigured = server?.optString("token")?.isNotBlank() == true
             )
             if (snapshot == null) return@withLock local.copy(result = "ERROR")
             if (node == null || watch == null) return@withLock local.copy(result = "NO_WATCH")

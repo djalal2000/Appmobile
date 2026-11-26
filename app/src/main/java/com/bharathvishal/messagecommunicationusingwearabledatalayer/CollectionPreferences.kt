@@ -30,6 +30,8 @@ internal class CollectionPreferences(context: Context) {
     val wearable: String get() = prefs.getString("wearable", "wearable") ?: "wearable"
     val sensors: Set<String> get() = prefs.getStringSet("sensors", DEFAULT_SENSOR_KEYS)?.toSet() ?: DEFAULT_SENSOR_KEYS
     val hasToken: Boolean get() = prefs.contains("token")
+    val serverConfigured: Boolean get() = custom && hasToken && validServerUrl(url) && organization.isNotBlank() &&
+        activity.isNotBlank() && wearable.isNotBlank() && activity != wearable
     val hz: Int get() = prefs.getInt("hz", 50)
     val interval: Int get() = prefs.getInt("interval", 10)
     val project: String get() = prefs.getString("project", "") ?: ""
@@ -106,8 +108,13 @@ internal class CollectionPreferences(context: Context) {
     fun configuration(): ConfigSnapshot = synchronized(configLock) {
         require(validSensorSelection(sensors) && validAcquisition(hz, interval))
         val json = JSONObject().put("sensors", JSONArray(sensors.sorted())).put("hz", hz).put("interval", interval)
-        if (custom) json.put("server", JSONObject().put("url", url).put("org", organization)
-            .put("activity", activity).put("wearable", wearable).put("token", decrypt()))
+        if (custom) {
+            require(serverConfigured)
+            val token = decrypt()
+            require(token.isNotBlank())
+            json.put("server", JSONObject().put("url", url).put("org", organization)
+                .put("activity", activity).put("wearable", wearable).put("token", token))
+        }
         val payload = json.toString()
         ConfigSnapshot(versionLocked(), configDigest(payload), payload)
     }

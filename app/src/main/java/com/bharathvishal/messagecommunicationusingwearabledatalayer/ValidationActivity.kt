@@ -340,7 +340,11 @@ class ValidationActivity : AppCompatActivity() {
                 val configuration = if (message.contains("Action: Start")) {
                     try {
                         val node = WatchRegistry(this@ValidationActivity).pinned
-                        val snapshot = withContext(Dispatchers.IO) { CollectionPreferences(this@ValidationActivity).configuration() }
+                        val snapshot = withContext(Dispatchers.IO) {
+                            val prefs = CollectionPreferences(this@ValidationActivity)
+                            require(prefs.serverConfigured)
+                            prefs.configuration()
+                        }
                         val sync = ConfigurationSync.synchronize(this@ValidationActivity, node, forStart = true)
                         if (sync != ConfigSyncResult.CONFIRMED ||
                             CollectionPreferences(this@ValidationActivity).version() != snapshot.version) {
@@ -355,7 +359,7 @@ class ValidationActivity : AppCompatActivity() {
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (error: Exception) {
                         HealthJournal.add(HealthCode.CONFIG_INVALID)
-                        commandNotice("Invalid settings. Check the InfluxDB token.", "Paramètres invalides. Vérifiez le jeton InfluxDB.")
+                        commandNotice("Configure InfluxDB in Settings before starting.", "Configurez InfluxDB dans les paramètres avant de démarrer.")
                         communicator.lastNodeId?.let { WatchRegistry(this@ValidationActivity).release(it) }
                         applyStoppedState()
                         return@launch

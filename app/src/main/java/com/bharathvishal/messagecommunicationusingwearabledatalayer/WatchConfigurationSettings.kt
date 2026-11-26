@@ -69,7 +69,7 @@ internal fun WatchConfigurationSettings(language: String) {
         PhoneConfigLine(t("Transmission interval", "Intervalle de transmission"), "${value.interval} s")
         PhoneConfigLine(t("Samples per batch", "Échantillons par lot"), "${value.hz * value.interval}")
         Text("InfluxDB", style = MaterialTheme.typography.titleMedium)
-        PhoneConfigLine(t("Configuration", "Configuration"), if (value.custom) t("Custom", "Personnalisée") else t("Original (built-in watch defaults)", "D’origine (valeurs intégrées à la montre)"))
+        PhoneConfigLine(t("Configuration", "Configuration"), if (value.custom) t("Custom", "Personnalisée") else t("Not configured", "Non configurée"))
         if (value.custom) {
             PhoneConfigLine(t("Server URL", "URL du serveur"), value.url)
             PhoneConfigLine(t("Organization", "Organisation"), value.org)

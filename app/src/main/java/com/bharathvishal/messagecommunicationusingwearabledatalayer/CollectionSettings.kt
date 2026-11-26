@@ -34,10 +34,10 @@ internal fun ServerSettings(language: String) {
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    Text(if (custom) t("Custom server", "Serveur personnalisé") else t("Original server configuration", "Configuration d’origine"),
+    Text(if (custom) t("Custom server", "Serveur personnalisé") else t("Server not configured", "Serveur non configuré"),
         style = MaterialTheme.typography.titleMedium)
-    Text(t("HTTPS only. Save synchronizes the watch; changes apply at the next Start. Token encrypted on both devices.",
-        "HTTPS uniquement. Save synchronise la montre ; réglages appliqués au prochain Start. Jeton chiffré sur les deux appareils."))
+    Text(t("HTTPS only. Configuration is required before recording. Save synchronizes the watch; changes apply at the next Start. Token encrypted on both devices.",
+        "HTTPS uniquement. Configuration obligatoire avant la collecte. Enregistrer synchronise la montre ; réglages appliqués au prochain Start. Jeton chiffré sur les deux appareils."))
     ConfigField(url, { url = it }, t("Server HTTPS URL", "URL HTTPS du serveur"), !busy)
     ConfigField(org, { org = it }, t("Organization", "Organisation"), !busy)
     ConfigField(activity, { activity = it }, t("Activity bucket", "Bucket activité"), !busy)
@@ -61,12 +61,36 @@ internal fun ServerSettings(language: String) {
     OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = !busy && custom, onClick = {
         busy = true
         scope.launch {
+            try {
+                val confirmation = ConfigurationSync.synchronize(context)
+                if (confirmation != ConfigSyncResult.CONFIRMED) {
+                    notice = ConfigurationSync.message(confirmation, language == AppLanguage.FRENCH)
+                } else {
+                    val report = runDiagnostics(context)
+                    val probe = report.detail?.optJSONObject("probe")
+                    notice = when {
+                        report.code != "OK" -> t("Connection test unavailable. Check Diagnostics.", "Test indisponible. Vérifiez Diagnostics.")
+                        report.detail?.optBoolean("busy") == true -> t("Stop recording and wait for pending writes.", "Arrêtez la collecte et attendez les écritures en attente.")
+                        probe == null -> t("Connection test unavailable.", "Test de connexion indisponible.")
+                        probe.optInt("activity") in 200..299 && probe.optInt("wearable") in 200..299 &&
+                            probe.optString("error").isBlank() -> t("Connection verified for both buckets.", "Connexion vérifiée pour les deux buckets.")
+                        else -> t("Connection test failed. Check Diagnostics.", "Échec du test. Vérifiez Diagnostics.")
+                    }
+                }
+            } finally { busy = false }
+        }
+    }) { Text(t("Test saved connection", "Tester la connexion enregistrée")) }
+    OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = !busy && custom, onClick = {
+        busy = true
+        scope.launch {
             val ok = withContext(Dispatchers.IO) { prefs.resetServer() }
             if (ok) { url = ""; org = ""; activity = "activity"; wearable = "wearable"; token = ""; savedToken = false; custom = false }
-            notice = if (ok) ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH) else t("Reset failed", "Échec de la restauration")
+            notice = if (ok) t("Server settings cleared. ", "Paramètres du serveur effacés. ") +
+                ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH)
+                else t("Reset failed", "Échec de la réinitialisation")
             busy = false
         }
-    }) { Text(t("Restore original configuration", "Rétablir la configuration d’origine")) }
+    }) { Text(t("Clear server configuration", "Effacer la configuration du serveur")) }
     if (notice.isNotEmpty()) Text(notice)
 }
 

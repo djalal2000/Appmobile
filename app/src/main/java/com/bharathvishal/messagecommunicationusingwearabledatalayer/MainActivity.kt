@@ -90,8 +90,8 @@ class MainActivity : ComponentActivity() {
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var showLangDialog by remember { mutableStateOf(false) }
-                    var showSettings by rememberSaveable { mutableStateOf(false) }
-                    var settingsPage by rememberSaveable { mutableStateOf<String?>(null) }
+                    var showSettings by rememberSaveable { mutableStateOf(!CollectionPreferences(this).serverConfigured) }
+                    var settingsPage by rememberSaveable { mutableStateOf<String?>(if (CollectionPreferences(this).serverConfigured) null else "server") }
                     val homeState = rememberSaveableStateHolder()
 
                     if (showLangDialog) {

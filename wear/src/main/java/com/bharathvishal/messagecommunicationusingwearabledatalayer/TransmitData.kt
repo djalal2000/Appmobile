@@ -20,16 +20,22 @@ import java.util.concurrent.TimeUnit
 
 class TransmissionService(private val debugLogs: Boolean = false, private val onStatusChanged: (JSONObject) -> Unit = {}) {
 
-    private val token = "n43TH_16XPvYcoHhKqtt5-r-ZxsYwdCAE1dCnoRf3ssQimb6Pf7rFDotYiomKeHPOTolhMQ0hjhGCpCaB3wSJA=="
-    private val org = "ISIS - Université Champollion"
-    private val bucketActivity = "activity"
-    private val bucketWearable = "wearable"
-    private val influxUrl = "https://indb1.chl2.connected-health.fr"
-
     private data class Destination(val url: String, val organization: String, val activity: String,
         val wearable: String, val credential: String)
-    private val original = Destination(influxUrl, org, bucketActivity, bucketWearable, token)
-    @Volatile private var destination = original
+    private class Connection(val destination: Destination, val service: InfluxService)
+    @Volatile private var connection: Connection? = null
+
+    private fun destinationFrom(server: JSONObject?): Destination? {
+        if (server == null) return null
+        return runCatching {
+            val target = Destination(server.getString("url"), server.getString("org"),
+                server.getString("activity"), server.getString("wearable"), server.getString("token"))
+            require(validServerUrl(target.url) && target.organization.isNotBlank() &&
+                target.activity.isNotBlank() && target.wearable.isNotBlank() &&
+                target.activity != target.wearable && target.credential.isNotBlank())
+            target
+        }.getOrNull()
+    }
 
     private val client = OkHttpClient.Builder()
         .followRedirects(false).followSslRedirects(false)
@@ -48,17 +54,11 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
         return Retrofit.Builder().baseUrl(target.url.trimEnd('/') + "/").client(authenticated).build()
             .create(InfluxService::class.java)
     }
-    @Volatile private var influxService = service(original, client)
 
     /** No points are inserted by the empty-body write probe. */
     suspend fun prepare(server: JSONObject?): Boolean {
         if (pendingCount() != 0L) return false
-        val target = if (server == null) original else try {
-            Destination(server.getString("url"), server.getString("org"), server.getString("activity"),
-                server.getString("wearable"), server.getString("token"))
-        } catch (_: Exception) { return false }
-        if (!validServerUrl(target.url) || target.organization.isBlank() || target.activity.isBlank() ||
-            target.wearable.isBlank() || target.activity == target.wearable || target.credential.isBlank()) return false
+        val target = destinationFrom(server) ?: return false
         return try {
             val probe = service(target, probeClient)
             for (bucket in listOf(target.activity, target.wearable)) {
@@ -69,20 +69,14 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
                 if (!ok) return false
             }
             if (pendingCount() != 0L) return false
-            influxService = service(target, client)
-            destination = target
+            connection = Connection(target, service(target, client))
             true
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { false }
     }
 
     suspend fun diagnose(server: JSONObject?): JSONObject {
-        val target = if (server == null) original else try {
-            Destination(server.getString("url"), server.getString("org"), server.getString("activity"),
-                server.getString("wearable"), server.getString("token"))
-        } catch (_: Exception) { return JSONObject().put("error", "CONFIG") }
-        if (!validServerUrl(target.url) || target.organization.isBlank() || target.activity.isBlank() ||
-            target.wearable.isBlank() || target.credential.isBlank()) return JSONObject().put("error", "CONFIG")
+        val target = destinationFrom(server) ?: return JSONObject().put("error", "CONFIG")
         val result = JSONObject()
         try {
             val probe = service(target, probeClient)
@@ -124,7 +118,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
     init {
         scope.launch {
             for (samples in activityQueue) {
-                writeBucket(destination.activity, activityWrites, "InfluxDB", samples.size.toLong(), 1) {
+                writeBucket(false, activityWrites, "InfluxDB", samples.size.toLong(), 1) {
                     buildString {
                         for (sample in samples) {
                             if (sample.sessionFields != null) {
@@ -145,7 +139,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
                     val next = wearableQueue.tryReceive().getOrNull() ?: break
                     submissions.add(next)
                 }
-                writeBucket(destination.wearable, wearableWrites, "InfluxDB_Wearable",
+                writeBucket(true, wearableWrites, "InfluxDB_Wearable",
                     submissions.sumOf { it.size.toLong() }, submissions.size) {
                     buildString {
                         for (batch in submissions) for (sample in batch) appendProtocolLine(sample.toLineProtocolWearable())
@@ -240,7 +234,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
     }
 
     private suspend fun writeBucket(
-        bucket: String, stats: BucketWrites, logTag: String, records: Long,
+        wearable: Boolean, stats: BucketWrites, logTag: String, records: Long,
         submissions: Int, buildLines: () -> String
     ) {
         var accepted: Boolean? = null
@@ -249,8 +243,14 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
             if (lineProtocol.isBlank()) return
             val requestBody = lineProtocol.toRequestBody("text/plain".toMediaType())
             // Preserve payload, timestamps, and destination across retries.
-            val service = influxService
-            val organization = destination.organization
+            val active = connection ?: run {
+                accepted = false
+                HealthJournal.add(HealthCode.CONFIG_INVALID)
+                return
+            }
+            val service = active.service
+            val organization = active.destination.organization
+            val bucket = if (wearable) active.destination.wearable else active.destination.activity
             val deadline = android.os.SystemClock.elapsedRealtime() + WRITE_RETRY_BUDGET_MS
             var attempt = 0
             fun remaining(): Long = deadline - android.os.SystemClock.elapsedRealtime()

@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 internal data class DiagnosticResult(val code: String, val detail: JSONObject? = null, val roundTripMs: Long = 0)
 
 internal suspend fun runDiagnostics(context: Context, journalOnly: Boolean = false): DiagnosticResult = withContext(Dispatchers.IO) {
-    val configuration = try { if (journalOnly) JSONObject() else CollectionPreferences(context).envelope(UUID.randomUUID().toString()) }
+    val configuration = try { if (journalOnly) null else CollectionPreferences(context).configuration() }
         catch (_: Exception) { return@withContext DiagnosticResult("CONFIG") }
     val id = UUID.randomUUID().toString()
     val client = Wearable.getMessageClient(context)
@@ -40,7 +40,7 @@ internal suspend fun runDiagnostics(context: Context, journalOnly: Boolean = fal
     try {
         Tasks.await(client.addListener(listener), 7, TimeUnit.SECONDS)
         val request = JSONObject().put("id", id).put("journalOnly", journalOnly)
-        configuration.optJSONObject("server")?.let { request.put("server", it) }
+        configuration?.let { request.put("version", it.version).put("hash", it.hash) }
         val start = android.os.SystemClock.elapsedRealtime()
         Tasks.await(client.sendMessage(node.id, "/pemesa/diagnostics-v1", request.toString().toByteArray(Charsets.UTF_8)), 7, TimeUnit.SECONDS)
         val answer = withTimeoutOrNull(20000L) { result.await() }

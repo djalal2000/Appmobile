@@ -39,7 +39,7 @@ The inertial timer samples the latest valid sensor readings. Heart rate, step co
 
 ## Data transmission and recovery
 
-The default InfluxDB buckets are `activity` and `wearable`. The activity bucket contains the `inertial_data` and `activity` measurements. The wearable bucket contains `heart_rate`, `steps`, `light`, `pressure`, and `fatigue_level`. The configuration supports a custom HTTPS URL, organization, distinct bucket names, and write token. Use study-specific credentials; do not disclose tokens in publications or shared logs.
+The default InfluxDB buckets are `activity` and `wearable`. The activity bucket contains the `inertial_data` and `activity` measurements. The wearable bucket contains `heart_rate`, `steps`, `light`, `pressure`, and `fatigue_level`. A user-supplied HTTPS URL, organization, distinct bucket names, and write token are mandatory before acquisition. No server URL, organization, or API token is embedded in the application. Use a dedicated token restricted to writing to the two selected buckets; keep research read access separate. Use study-specific credentials; do not disclose tokens in publications or shared logs.
 
 Transient HTTP and network failures trigger bounded retries with increasing delays, reusing the original payload and timestamps. A batch in transmission has a five-minute recovery budget. The activity queue holds up to 32 waiting batches; the wearable queue is limited to 2,048 pending records. Data can be lost if the queues fill, recovery fails, or the watch process stops. A successful Stop acknowledgement confirms acquisition has stopped and partial batches have been queued, not that all measurements have been committed to InfluxDB.
 
@@ -68,7 +68,7 @@ The Android modules use compile SDK 36 and target SDK 36. The continuous integra
    On Windows, use `gradlew.bat`.
 
 5. Install the mobile and Wear OS applications on their respective devices. Open PEMESA on the watch, grant the required sensor permissions, and associate it using the mobile application.
-6. Configure InfluxDB, select sensors and acquisition settings, and verify the watch configuration confirmation before starting a session.
+6. Configure InfluxDB in Settings, save and synchronize with the associated watch, then select **Test saved connection**. Both empty-body write probes must succeed before Start. Select sensors and acquisition settings and verify the watch configuration confirmation. Clearing the server configuration removes the saved credential from the phone and synchronizes an unconfigured revision when the watch is available and idle.
 
 ## Experimental validation
 
@@ -83,3 +83,7 @@ Development team: djalal.bouchekif@irit.fr
 ## License
 
 See the [LICENSE](LICENSE) file (Apache License, Version 2.0).
+
+## Credential management
+
+Use separate, least-privilege write tokens for research devices and read tokens for analysis. Rotate and revoke tokens using the InfluxDB administration interface. Do not commit tokens or private endpoints, including in build configuration or migration scripts. A token removed from current source may remain in historical commits; revoke any previously committed token before distributing the repository or APKs. Both mobile and watch applications must be updated together for this configuration protocol.

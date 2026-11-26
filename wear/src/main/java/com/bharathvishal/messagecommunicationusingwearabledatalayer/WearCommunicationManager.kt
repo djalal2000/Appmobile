@@ -379,7 +379,10 @@ class WearCommunicationManager(
                     } else if (sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L) {
                         reply.put("busy", true)
                     } else {
-                        reply.put("probe", transmit.diagnose(request.optJSONObject("server")))
+                        val saved = withContext(Dispatchers.IO) { configurationStore.load(node) }
+                        val server = saved?.takeIf { configMatches(request.optString("version"), request.optString("hash"), it.version, it.hash) }
+                            ?.json()?.optJSONObject("server")
+                        reply.put("probe", transmit.diagnose(server))
                     }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { reply.put("error", "WATCH") }
