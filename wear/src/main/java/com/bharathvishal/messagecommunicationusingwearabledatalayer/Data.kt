@@ -107,7 +107,7 @@ data class Data(
         appendActivity(activityTags(), epochMillis ?: parseTimestampToMillis(timestamp))
     }
 
-    /** The production writer shares tags and timestamp between both measurements. */
+    /** Serialize both activity measurements with the same tags and timestamp. */
     internal fun appendActivityBatchLines(output: StringBuilder) {
         val tags = activityTags()
         val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)

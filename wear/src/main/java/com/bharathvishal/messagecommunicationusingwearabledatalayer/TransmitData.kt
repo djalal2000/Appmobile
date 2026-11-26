@@ -115,7 +115,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
     private var statusSequence = 0L
     private val activityWrites = BucketWrites()
     private val wearableWrites = BucketWrites()
-    // Bound memory during outages. Independent FIFO workers preserve bucket ordering.
+    // Bounded FIFO queues preserve per-bucket write order.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activityQueue = Channel<List<Data>>(32)
     private val wearableQueue = Channel<List<Data>>(512)
@@ -140,7 +140,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
         scope.launch {
             for (first in wearableQueue) {
                 val submissions = mutableListOf(first)
-                // Coalesce ready batches without waiting again; acquisition already groups them.
+                // Merge available submissions without delaying transmission.
                 for (i in 1..15) {
                     val next = wearableQueue.tryReceive().getOrNull() ?: break
                     submissions.add(next)
@@ -215,7 +215,6 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
         .replace("\"", "\\\"").replace("\n", " ").replace("\r", " ") + "\""
 
     fun transmitSession(id: String, person: String, study: JSONObject, hz: Long, sensors: Set<String>, epoch: Long, watchId: String? = null) {
-        // Metadata is additive; existing measurements retain their fields and names.
         val fields = listOf("project", "experiment", "site", "protocol").mapNotNull { key ->
             study.optString(key).take(120).takeIf { it.isNotBlank() }?.let { "$key=" + sessionField(it) }
         }
@@ -227,7 +226,6 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
 
     fun transmitData(data: List<Data>) {
         if (data.isEmpty()) return
-        // Inertial samples no longer carry any wearable measurements.
         enqueue(activityQueue, activityWrites, data, "InfluxDB")
     }
 
@@ -249,9 +247,8 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
         try {
             val lineProtocol = buildLines()
             if (lineProtocol.isBlank()) return
-            // A retry must preserve the original payload and timestamps.
             val requestBody = lineProtocol.toRequestBody("text/plain".toMediaType())
-            // Reuse the exact request and destination throughout recovery.
+            // Preserve payload, timestamps, and destination across retries.
             val service = influxService
             val organization = destination.organization
             val deadline = android.os.SystemClock.elapsedRealtime() + WRITE_RETRY_BUDGET_MS
@@ -297,7 +294,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
                     markRetry(code.toLong())
                     delay(retryDelay)
                 } catch (error: IOException) {
-                    // Certificate failures are not transient network outages.
+                    // Do not retry certificate validation failures.
                     if (error is javax.net.ssl.SSLHandshakeException ||
                         error is javax.net.ssl.SSLPeerUnverifiedException) throw error
                     val retryDelay = recoveryDelayMs(attempt, remaining()) ?: throw error

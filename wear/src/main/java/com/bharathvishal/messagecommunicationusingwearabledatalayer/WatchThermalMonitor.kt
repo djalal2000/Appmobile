@@ -5,7 +5,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.widget.Toast
 
-/** Observe the system thermal level; never silently change sampling or screen settings. */
+/** Monitor Android thermal status without modifying acquisition settings. */
 internal class WatchThermalMonitor(private val context: Context) {
     private val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     private var cleanup: (() -> Unit)? = null

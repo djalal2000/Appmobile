@@ -43,7 +43,6 @@ class MainActivity : AppCompatActivity() {
         communicationManager = WearCommunicationManager(this, binding)
         binding.pairPhoneButton.setOnClickListener { communicationManager.showPairingCode() }
 
-        // Log the sensors available on this device.
         listAllSensors()
 
         if (!hasPermissions()) {

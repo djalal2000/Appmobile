@@ -17,7 +17,7 @@ internal class ConfigSnapshot(val version: String, val hash: String, val payload
 }
 internal enum class ConfigSyncResult { CONFIRMED, OFFLINE, BUSY, ERROR, CHANGED }
 
-/** The phone is authoritative. Only a changed/missing revision is transferred. */
+/** Synchronizes the phone configuration with the selected watch. */
 internal object ConfigurationSync {
     private val mutex = Mutex()
     private suspend fun exchange(context: Context, node: String, watchId: String, body: JSONObject): JSONObject? {
@@ -74,7 +74,7 @@ internal object ConfigurationSync {
             }
         }
 
-    /** Compare the locally saved revision with the watch's verified revision, without transferring settings. */
+    /** Verify the saved configuration revision without transferring its contents. */
     suspend fun inspectLocal(context: Context): PhoneConfigurationView = withContext(Dispatchers.IO) {
         mutex.withLock {
             val prefs = CollectionPreferences(context)

@@ -118,7 +118,6 @@ class ValidationActivity : AppCompatActivity() {
         binding.watchBatteryTv.text = "🔋 $batteryValue"
         binding.watchBatteryTv.contentDescription = "$title: $batteryValue"
         if (level != null) {
-            // Expire stale battery readings.
             batteryUiHandler.postDelayed(batteryExpiry, 25000L)
         }
     }
@@ -128,7 +127,7 @@ class ValidationActivity : AppCompatActivity() {
     private var selectedprofession: String = ""
     private var selectedActivity: String = "Unlabeled activity"
     private var hasSelectedActivity = false
-    // Persist custom activity labels by profession, independently of the display language.
+    // Store activity labels independently of the interface language.
     private val unlabeledIndex = 6
     private lateinit var defaultActivityLabels: List<String>
     private val customActivityLabels = MutableList<String?>(7) { null }
@@ -294,7 +293,7 @@ class ValidationActivity : AppCompatActivity() {
     private fun confirmedCommand(message: String, onFailure: () -> Unit = {}, onConfirmed: () -> Unit) {
         when (commandGate.request(message)) {
             RecordingCommandGate.Decision.QUEUE_STOP -> {
-                // Preserve the stop callback and run it before any new command.
+                // Prioritize pending Stop commands.
                 queuedStop = { confirmedCommand(message, onFailure, onConfirmed) }
                 commandNotice("Stop requested. Waiting for the current command.",
                     "Arrêt demandé. Attente de la commande en cours.")
@@ -330,7 +329,7 @@ class ValidationActivity : AppCompatActivity() {
             }
         }
         commandGate.begin(message)
-        // Permit a Stop request even while the Start acknowledgement is in flight.
+        // Allow Stop to queue while Start is awaiting acknowledgement.
         if (message.contains("Action: Start")) {
             binding.startRecordingButton.isEnabled = false
             binding.stopRecordingButton.isEnabled = true
@@ -406,7 +405,7 @@ class ValidationActivity : AppCompatActivity() {
                 val stopNext = commandGate.finish()
                 val next = queuedStop
                 queuedStop = null
-                // Stay on the main thread: no ordinary command can take the next slot.
+                // Reserve the next command slot on the main thread.
                 if (stopNext && lifecycle.currentState != androidx.lifecycle.Lifecycle.State.DESTROYED) {
                     next?.invoke()
                 }
@@ -695,7 +694,6 @@ class ValidationActivity : AppCompatActivity() {
         }
 
     private fun uiStyleButton(button: android.widget.Button, originalColor: Int) {
-        // Use distinct colors for selected, idle, and stop states.
         val fill = when (originalColor) {
             ContextCompat.getColor(this, android.R.color.holo_green_light) -> uiColor("#096B69")
             ContextCompat.getColor(this, android.R.color.darker_gray) -> uiColor("#405B6B")
@@ -718,7 +716,6 @@ class ValidationActivity : AppCompatActivity() {
         button.backgroundTintList = null
         (button as? androidx.appcompat.widget.AppCompatButton)?.supportBackgroundTintList = null
         button.background?.setTintList(null)
-        // Use dark ink on the pastel Start button for readable contrast.
         val enabledText = if (button === binding.startRecordingButton) uiColor("#173E59")
             else android.graphics.Color.WHITE
         button.setTextColor(android.content.res.ColorStateList(
@@ -728,7 +725,6 @@ class ValidationActivity : AppCompatActivity() {
         applyModernButtonTypography(button, 15f)
     }
 
-    /** Keep controls compact, with legible medium-weight text and a generous touch target. */
     private fun applyModernButtonTypography(button: Button, sizeSp: Float) {
         button.setAllCaps(false)
         button.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
@@ -810,7 +806,6 @@ class ValidationActivity : AppCompatActivity() {
         uiStyleButton(binding.startRecordingButton, uiColor("#B9E0FA"))
         uiStyleButton(binding.pauseRecordingButton, uiColor("#76521E"))
         uiStyleButton(binding.stopRecordingButton, uiColor("#B32636"))
-        // Apply the current selection colors to all activity buttons.
         updateActivityButtonColor()
         // Install once; later color updates must not restart a running press animation.
         (activityButtons() + listOf(
@@ -819,7 +814,6 @@ class ValidationActivity : AppCompatActivity() {
             binding.pauseRecordingButton,
             binding.stopRecordingButton
         )).forEach(::installButtonPressEffect)
-        // Animate entry without delaying input handling.
         binding.recordingButtonsContainer.apply {
             alpha = 0.86f
             translationY = uiDp(6).toFloat()
@@ -831,7 +825,7 @@ class ValidationActivity : AppCompatActivity() {
     private val activityButtonColors = mutableMapOf<Button, Int>()
     private val activityButtonAnimations = mutableMapOf<Button, android.animation.ValueAnimator>()
 
-    /** Render each acknowledged selection with a fresh, untinted activity background. */
+    /** Render the acknowledged activity selection. */
     private fun styleActivityButton(button: Button, fill: Int) {
         if (activityButtonTargets[button] == fill) return
         activityButtonAnimations.remove(button)?.cancel()

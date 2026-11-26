@@ -1,154 +1,85 @@
-# 📊 PEMESA
+# PEMESA
 
-**PEMESA** (*Pénibilité Métier Santé*) is an application developed as part of a research project on **work-related strain**, based on **data collection and analysis from IoT devices**.
+PEMESA (*Pénibilité Métier Santé*) is a research application for collecting and annotating wearable sensor data in studies of work-related strain among healthcare professionals. It consists of an Android mobile application and a Wear OS acquisition application.
 
----
+## Repository structure
 
-## 📁 Project Structure
+| Directory | Purpose |
+| --- | --- |
+| `app/` | Mobile interface, participant identification, activity annotation, device association, and configuration |
+| `wear/` | Sensor acquisition, session control, buffering, and InfluxDB transmission |
+| `tools/pemesa-migration/` | Historical migration utilities |
+| `.github/workflows/` | Build and test automation |
 
-```text
-PEMESA/
-├── app/          # Source code for the Android mobile application
-├── wear/         # Source code for the Wear OS application
-└── README.md
-```
+## Architecture
 
----
+The mobile application associates with a selected watch and sends acquisition commands and configuration revisions through the Wear OS Data Layer. The watch verifies the saved configuration before starting a session. During acquisition, sensor callbacks are processed on a dedicated thread. Inertial samples are annotated on the watch using the current activity label, participant identifier, session identifier, watch identifier, and acquisition timestamp.
 
-## 📚 Table of Contents
+The watch submits data directly to InfluxDB over HTTPS. Independent, bounded FIFO queues in RAM separate activity and wearable transmissions. No measurement data are permanently stored by the application on the watch. Configuration is persisted separately; custom API credentials are protected using Android Keystore-backed encryption.
 
-- [Overview](#overview)
-- [Installation](#installation)
-  - [Preparing the Device](#preparing-the-device)
-  - [Wireless Debugging](#wireless-debugging)
-- [Features](#features)
-  - [Mobile Application](#mobile-application)
-  - [Wear OS Application](#wear-os-application)
-    - [Motion Sensors](#motion-sensors)
-    - [Environmental Sensors](#environmental-sensors)
-    - [Physiological Sensors](#physiological-sensors)
-- [Sampling Frequency](#sampling-frequency)
-- [Data Transmission](#data-transmission)
-- [Best Practices](#best-practices)
-- [Support](#support)
-- [License](#license)
+## Acquisition
 
----
+The configurable inertial sampling targets are 25, 50, and 100 Hz. The default is 50 Hz with a 10-second activity transmission interval. The actual hardware sensor event rate and effective sampling rate depend on the device and operating conditions.
 
-## 🧠 Overview
+| Signal | Android sensor | InfluxDB fields |
+| --- | --- | --- |
+| Acceleration | `TYPE_ACCELEROMETER` | `acceX`, `acceY`, `acceZ` |
+| Angular velocity | `TYPE_GYROSCOPE` | `gyroX`, `gyroY`, `gyroZ` |
+| Gravity | `TYPE_GRAVITY` | `gravityX`, `gravityY`, `gravityZ` |
+| Linear acceleration | `TYPE_LINEAR_ACCELERATION` | `linAccX`, `linAccY`, `linAccZ` |
+| Rotation vector | `TYPE_ROTATION_VECTOR` | `rotX`, `rotY`, `rotZ`, `rotW` |
+| Magnetic field (optional; disabled by default) | `TYPE_MAGNETIC_FIELD` | `magX`, `magY`, `magZ` |
+| Heart rate | `TYPE_HEART_RATE` | `bpm` |
+| Steps | `TYPE_STEP_COUNTER` | `steps` |
+| Ambient light | `TYPE_LIGHT` | `lux` |
+| Atmospheric pressure | `TYPE_PRESSURE` | `hPa` |
+| Subjective fatigue | Manual input, scale 0–5 | `fatigue_level` |
 
-**PEMESA** facilitates the **collection**, **management**, and **analysis** of physiological, inertial, and environmental data for monitoring work-related strain.  
+The inertial timer samples the latest valid sensor readings. Heart rate, step count, light, and pressure are event-driven; heart rate and light are recorded on changes. Fatigue is recorded at session start and on subsequent changes when enabled. Sensor availability and permissions depend on the device. All signals can be selected in the mobile settings.
 
-The application allows you to:
-- Collect **inertial data** (accelerometer, gyroscope, etc.)
-- Measure **physiological indicators** (heart rate)
-- Monitor **environmental parameters** (light, pressure, etc.)
-- **Remotely control** the smartwatch from the mobile app
-- **Label user activities in real time**
+## Data transmission and recovery
 
-### The ecosystem includes:
-📱 **Android Mobile App** – control interface and session management  
-⌚ **Wear OS App** – sensor data capture and transmission  
+The default InfluxDB buckets are `activity` and `wearable`. The activity bucket contains the `inertial_data` and `activity` measurements. The wearable bucket contains `heart_rate`, `steps`, `light`, `pressure`, and `fatigue_level`. The configuration supports a custom HTTPS URL, organization, distinct bucket names, and write token. Use study-specific credentials; do not disclose tokens in publications or shared logs.
 
----
+Transient HTTP and network failures trigger bounded retries with increasing delays, reusing the original payload and timestamps. A batch in transmission has a five-minute recovery budget. The activity queue holds up to 32 waiting batches; the wearable queue is limited to 2,048 pending records. Data can be lost if the queues fill, recovery fails, or the watch process stops. A successful Stop acknowledgement confirms acquisition has stopped and partial batches have been queued, not that all measurements have been committed to InfluxDB.
 
-## ⚙️ Installation
+If the phone disconnects during acquisition, the watch may continue collecting and transmitting while its application remains running. Samples retain the last acknowledged activity label until a new annotation reaches the watch. If Internet access is interrupted but the phone-watch link remains available, new annotations can still be applied. The mobile interface displays transmission and connection status; diagnostics include the Android thermal status and a bounded technical journal.
 
-### Preparing the Device
+## Build and installation
 
-#### Enable Developer Mode
+The Android modules use compile SDK 36 and target SDK 36. The continuous integration workflow uses JDK 17.
 
-1. Open **Settings > About Device > Build Number** (or **Software Version**).  
-2. Tap the **Build Number 7 times** to enable **Developer Mode**.  
-3. Then activate **Developer Options**.
+1. Open the repository in Android Studio and install the required Android SDK.
+2. Enable developer options and wireless debugging on the test device and watch.
+3. Connect the watch using Android Debug Bridge (ADB), substituting the addresses and ports shown on the watch:
 
----
+   ```sh
+   adb pair <IP>:<PAIRING_PORT>
+   adb connect <IP>:<DEBUG_PORT>
+   adb devices
+   ```
 
-### Wireless Debugging
+4. Build both modules and run the JVM tests:
 
-Ensure that your **computer** and **smartwatch** are on the **same Wi-Fi network**.
+   ```sh
+   ./gradlew :app:assembleDebug :wear:assembleDebug :app:testDebugUnitTest :wear:testDebugUnitTest
+   ```
 
-1. Enable **Wireless Debugging** in **Developer Options**.  
-2. Open a terminal on your computer and navigate to `android_sdk/platform-tools`.  
-3. On the watch, retrieve the **IP address**, **port**, and **pairing code** via *Pair device with pairing code*.  
-4. Run the following commands:  
+   On Windows, use `gradlew.bat`.
 
-```bash
-adb pair <IP>:<PORT>
-adb connect <IP>:<PORT>
-```
-5. Verify the connection:  
-```bash
-adb devices
-```
+5. Install the mobile and Wear OS applications on their respective devices. Open PEMESA on the watch, grant the required sensor permissions, and associate it using the mobile application.
+6. Configure InfluxDB, select sensors and acquisition settings, and verify the watch configuration confirmation before starting a session.
 
----
+## Experimental validation
 
-## 🚀 Features
+Before deploying PEMESA in a study, verify sensor availability, effective sampling rate, activity annotation timing, clock alignment, transmission integrity, battery endurance, and thermal behavior on the target hardware. Include controlled phone-watch disconnection, Internet outage, reconnection, and Stop tests. The JVM tests and successful Android builds do not replace physical-device or end-to-end experimental validation.
 
-### Mobile Application
+For reproducibility, record the repository commit, device model, software versions, selected sensors, sampling target, transmission interval, and study configuration. Do not include participant identifiers or API credentials in public materials.
 
-- Remote control of data collection
-- Real-time activity labeling
+## Contact
 
-#### Main Interfaces
-- **Home Screen:** enter `person_id` and select job/profile
-- **Control Screen:** buttons **Start**, **Pause**, **Stop**, activity selection, and fatigue scale (0-5)
+Development team: djalal.bouchekif@irit.fr
 
-### Wear OS Application
+## License
 
-- Executes instructions from the mobile app
-- Configures and collects continuous sensor data
-
-#### Motion Sensors
-- `TYPE_ACCELEROMETER`, `TYPE_GYROSCOPE`, `TYPE_GRAVITY`, `TYPE_ROTATION_VECTOR`, `TYPE_LINEAR_ACCELERATION`, `TYPE_STEP_COUNTER`
-
-#### Environmental Sensors
-- `TYPE_LIGHT`, `TYPE_PRESSURE`
-
-#### Physiological Sensors
-- `TYPE_HEART_RATE`
-
----
-
-## ⏱️ Sampling Frequency
-
-- Sensors `ACCELEROMETER`, `GYROSCOPE`, `GRAVITY`, `ROTATION_VECTOR`, `LINEAR_ACCELERATION`: **50 Hz** (adjustable)  
-- Sensors `STEP_COUNTER`, `LIGHT`, `PRESSURE`, `HEART_RATE`: measured on each available event
-
----
-
-## ☁️ Data Transmission
-
-Data is transmitted **in real time** via Wi-Fi to an **InfluxDB** database.
-
-Configuration parameters:
-
-```bash
-INFLUXDB_URL="https://<your-influxdb-instance>"
-INFLUXDB_TOKEN="<your-token>"
-INFLUXDB_ORG="<your-organization>"
-INFLUXDB_BUCKET="<your-bucket>"
-```
-
----
-
-## 📝 Best Practices
-
-- Keep a maximum distance of 6m between the phone and watch (Bluetooth) to avoid automatic collection interruption. A notification will be sent if disconnected.  
-- Ensure the watch is properly positioned on the participant's wrist.  
-- Check the watch's battery level before each session.
-
----
-
-## 💡 Support
-
-- Refer to the official project documentation.  
-- Contact the development team: **djalal.bouchekif@irit.fr**
-
----
-
-## ⚖️ License
-
-This project is distributed under the **MIT License**. Free to use, modify, and redistribute under the license terms.
-
+See the [LICENSE](LICENSE) file (Apache License, Version 2.0).

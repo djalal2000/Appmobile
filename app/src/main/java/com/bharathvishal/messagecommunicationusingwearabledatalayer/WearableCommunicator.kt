@@ -120,7 +120,7 @@ class WearableCommunicator(
                 }
 
                 lastNodeId = node.id
-                // Install the waiter before sending: a fast reply must not be lost.
+                // Register the acknowledgement waiter before sending.
                 val response = CompletableDeferred<Unit>()
                 ack = response
                 pendingConnectionAck = response
@@ -257,7 +257,6 @@ class WearableCommunicator(
                 Log.d("WearableACK", "📥 ACK reçu pour vérification d'ouverture : $message")
             }
             WATCH_BATTERY_PATH -> {
-                // Accept battery readings only from the selected watch.
                 if (event.sourceNodeId == lastNodeId) {
                     onWatchBatteryLevel?.invoke(message.toIntOrNull()?.takeIf { it in 0..100 })
                 }

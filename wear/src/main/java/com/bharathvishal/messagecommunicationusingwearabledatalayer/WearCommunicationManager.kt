@@ -66,7 +66,6 @@ class WearCommunicationManager(
     private var magnetometer: Sensor? = null
     private var stepCounter: Sensor? = null
 
-    // Latest sensor readings.
     private var xaccel = 0f
     private var yaccel = 0f
     private var zaccel = 0f
@@ -139,7 +138,7 @@ class WearCommunicationManager(
     private val transmit = TransmissionService(
         context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
     ) { status ->
-        // Called by the writer under its lock: defer messaging, never take recordingLock here.
+        // Defer status delivery to avoid acquiring recordingLock under the writer lock.
         commandHandler.post {
             val node = devicePrefs.getString("owner", null) ?: return@post
             if (!authorized(node)) return@post
@@ -205,7 +204,6 @@ class WearCommunicationManager(
                 }
 
                 WATCH_BATTERY_PATH -> {
-                    // Handle battery requests independently of recording commands.
                     if (messageStr == "get") {
                         val battery = context.getSystemService(Context.BATTERY_SERVICE)
                             as? android.os.BatteryManager
@@ -244,7 +242,7 @@ class WearCommunicationManager(
 
     private fun combinedWriteStatus(): org.json.JSONObject = synchronized(recordingLock) {
         val status = transmit.writeStatus()
-        // Include the local, not-yet-submitted wearable batch in the pending status.
+        // Include the unsent wearable batch.
         status.put("pending", status.getLong("pending") + if (pendingWearable.size > 0) 1L else 0L)
     }
 
@@ -405,11 +403,11 @@ class WearCommunicationManager(
     private val commandPath = "/pemesa/command-v1"
     private val commandAckPath = "/pemesa/command-ack-v1"
     private val commandHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    // Keep only recent command results in memory; never persist them to disk.
+    // Cache recent command acknowledgements in RAM.
     private val completedCommands = CommandResults()
 
     private fun receiveConfirmedCommand(node: String, message: String) {
-        // Execute control commands serially on the main thread, as with the existing listener.
+        // Serialize control commands on the main thread.
         commandHandler.post {
             val envelope = try { org.json.JSONObject(message) } catch (error: Exception) {
                 Log.w(TAG, "Invalid command envelope", error)
@@ -479,7 +477,6 @@ class WearCommunicationManager(
         val fatigue = fields["FatigueLevel"]
         return try {
             handleMessagePayload(payload)
-            // Confirm the resulting recording state and the applied metadata.
             val stateMatches = recordingStateMatches(action, sensorTimer != null, stop, paused)
             val labelMatches = fields["Activity"]?.let { sharedPref.getString("userActivity", null) == it } ?: true
             val fatigueMatches = fatigue?.let { sharedPref.getString("Fatigue Level", null) == it } ?: true
@@ -503,7 +500,7 @@ class WearCommunicationManager(
         val userActivity = messageMap["Activity"]
         val action = messageMap["Action"]
         val fatigueLevel = messageMap["FatigueLevel"]
-        // Do not log participant values.
+        // Do not log participant metadata.
 
         when (action) {
             "Start" -> {
@@ -518,7 +515,7 @@ class WearCommunicationManager(
                 updateUI("📡 Start recording...")
                 startRecording()
                 HealthJournal.add(HealthCode.START_OK)
-                // Record the declared baseline even when it matches the stored value.
+                // Record the initial fatigue rating.
                 if ("fatigue" in enabledSensors) transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
                 transmit.transmitSession(sessionId ?: "", personID ?: "unknown", studyMetadata,
                     1000L / samplingPeriodMs, enabledSensors, sessionEpoch, watchId)
@@ -686,7 +683,7 @@ class WearCommunicationManager(
                     return
                 }
                 freshSensors.add(it.sensor.type)
-                // Only event-driven measurements need this conversion; inertial samples use the timer timestamp.
+                // Event-driven signals use sensor timestamps; inertial samples use the session clock.
                 when (it.sensor.type) {
 
                     Sensor.TYPE_HEART_RATE -> {
@@ -714,7 +711,7 @@ class WearCommunicationManager(
                         val totalSteps = it.values[0].toInt()
                         val previousCount = lastStepCount
                         if (previousCount == null) {
-                            // Establish the session baseline from an actual sensor event.
+                            // Initialize the step counter from the first sensor event.
                             lastStepCount = totalSteps
                             transmitSensorData(steps = stepCount, eventTime = sensorEpochMillis(it.timestamp))
                         } else {
@@ -725,7 +722,7 @@ class WearCommunicationManager(
                                 transmitSensorData(steps = stepCount, eventTime = sensorEpochMillis(it.timestamp))
                                 requestSensorUiRefresh()
                             } else if (newSteps < 0) {
-                                // Re-establish the baseline if the hardware counter resets.
+                                // Reset the baseline when the hardware counter resets.
                                 lastStepCount = totalSteps
                             }
                         }
@@ -782,7 +779,7 @@ class WearCommunicationManager(
     private fun sensorEpochMillis(sensorNanos: Long): Long =
         System.currentTimeMillis() - ((android.os.SystemClock.elapsedRealtimeNanos() - sensorNanos).coerceAtLeast(0L) / 1000000L)
 
-    // Called only with recordingLock held (including the fatigue command path).
+    // Requires recordingLock.
     private fun flushWearableLocked() {
         commandHandler.removeCallbacks(wearableFlush)
         val batch = pendingWearable.drain()
@@ -879,7 +876,7 @@ class WearCommunicationManager(
         }
     }
 
-    // Called under recordingLock; the submitted list is independent of subsequent samples.
+    // Requires recordingLock; ownership transfers to the writer.
     private fun submitPendingSamples() {
         if (pendingSamples.size == 0) return
         transmit.transmitData(pendingSamples.drain())
@@ -891,7 +888,7 @@ class WearCommunicationManager(
             stop = true; paused = false
             recordingGeneration++
             sensorTimer?.cancel(); sensorTimer = null
-            // Submit both partial batches before acknowledging the stop command.
+            // Enqueue partial batches before acknowledging Stop.
             submitPendingSamples()
             flushWearableLocked()
             commandHandler.removeCallbacks(sensorUiRefresh)

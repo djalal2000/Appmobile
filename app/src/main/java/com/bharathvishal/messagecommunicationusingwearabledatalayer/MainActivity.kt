@@ -49,7 +49,7 @@ class MainActivity : ComponentActivity() {
         configurationMonitor?.cancel()
         configurationMonitor = lifecycleScope.launch {
             while (true) {
-                // A status exchange is small; full configuration is sent only if different.
+                // Transfer configuration only when revisions differ.
                 if (WatchRegistry(this@MainActivity).pinned == null)
                     ConfigurationSync.synchronize(this@MainActivity)
                 kotlinx.coroutines.delay(15000L)
@@ -360,7 +360,7 @@ fun DropdownField(
     displayOption: (String) -> String = { it }
 ) {
     var expanded by remember { mutableStateOf(false) }
-    // Display names are edited centrally in Settings; the selected protocol value is unchanged.
+    // Display names do not alter protocol values.
     val context = LocalContext.current
     val preferences = remember(context) {
         context.getSharedPreferences(PROFESSION_NAMES_PREFERENCES, android.content.Context.MODE_PRIVATE)

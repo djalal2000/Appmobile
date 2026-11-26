@@ -1,6 +1,5 @@
 package com.bharathvishal.messagecommunicationusingwearabledatalayer
 
-/** Pure protocol rules shared by the runtime and its JVM tests. */
 internal fun validatedCommand(payload: String, running: Boolean): Map<String, String>? {
         val pairs = payload.split(',').map { it.split(':', limit = 2).map(String::trim) }
         if (pairs.any { it.size != 2 || it[0].isEmpty() || it[1].isEmpty() }) return null
@@ -29,7 +28,7 @@ internal class SampleBatch<T>(private val capacity: Int) {
     fun add(sample: T) { items.add(sample) }
     fun isFull(): Boolean = items.size >= capacity
     fun clear() = items.clear()
-    // Transfer ownership to the writer; never copy or mutate a submitted batch.
+    // Transfer batch ownership to the writer.
     fun drain(): List<T> {
         if (items.isEmpty()) return emptyList()
         val completed = items
@@ -81,7 +80,7 @@ internal fun retryDelayMs(code: Int, retryHeader: String?, attempt: Int,
     return recoveryDelayMs(attempt, remainingMs, afterMs)
 }
 
-// Match the real watch timer and flags before reporting command execution.
+// Verify recording state before acknowledging a command.
 internal fun recordingStateMatches(action: String?, timerRunning: Boolean, stopped: Boolean, paused: Boolean): Boolean =
     when (action) {
         "Start", "Resume" -> timerRunning && !stopped && !paused
@@ -90,14 +89,13 @@ internal fun recordingStateMatches(action: String?, timerRunning: Boolean, stopp
         else -> true
     }
 
-/** Validate without allocating a temporary collection at each hardware event. */
 internal fun finiteSensorValues(values: FloatArray, required: Int): Boolean {
     if (required < 1 || values.size < required) return false
     for (index in 0 until required) if (!values[index].isFinite()) return false
     return true
 }
 
-/** Bounded wearable batching policy. Call under the recording lock. */
+/** Access under the recording lock. */
 internal class WearableBatch<T>(private val capacity: Int = 64) {
     private val batch = SampleBatch<T>(capacity)
     val size: Int get() = batch.size
