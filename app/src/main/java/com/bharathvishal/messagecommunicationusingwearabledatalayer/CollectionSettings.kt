@@ -36,8 +36,8 @@ internal fun ServerSettings(language: String) {
     val scope = rememberCoroutineScope()
     Text(if (custom) t("Custom server", "Serveur personnalisé") else t("Original server configuration", "Configuration d’origine"),
         style = MaterialTheme.typography.titleMedium)
-    Text(t("HTTPS only. Changes apply at the next Start. Token encrypted on the phone.",
-        "HTTPS uniquement. Les changements s’appliquent au prochain Start. Jeton chiffré sur le téléphone."))
+    Text(t("HTTPS only. Save synchronizes the watch; changes apply at the next Start. Token encrypted on both devices.",
+        "HTTPS uniquement. Save synchronise la montre ; réglages appliqués au prochain Start. Jeton chiffré sur les deux appareils."))
     ConfigField(url, { url = it }, t("Server HTTPS URL", "URL HTTPS du serveur"), !busy)
     ConfigField(org, { org = it }, t("Organization", "Organisation"), !busy)
     ConfigField(activity, { activity = it }, t("Activity bucket", "Bucket activité"), !busy)
@@ -53,7 +53,7 @@ internal fun ServerSettings(language: String) {
             scope.launch {
                 val ok = withContext(Dispatchers.IO) { prefs.saveServer(url.trim(), org.trim(), activity.trim(), wearable.trim(), token.trim()) }
                 if (ok) { custom = true; savedToken = true; token = "" }
-                notice = if (ok) t("Saved. Verified from the watch at Start.", "Enregistré. Vérifié depuis la montre au Start.")
+                notice = if (ok) ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH)
                     else t("Could not save. Re-enter the token.", "Enregistrement impossible. Ressaisissez le jeton.")
                 busy = false
             }
@@ -63,7 +63,7 @@ internal fun ServerSettings(language: String) {
         scope.launch {
             val ok = withContext(Dispatchers.IO) { prefs.resetServer() }
             if (ok) { url = ""; org = ""; activity = "activity"; wearable = "wearable"; token = ""; savedToken = false; custom = false }
-            notice = if (ok) t("Original configuration restored", "Configuration d’origine rétablie") else t("Reset failed", "Échec de la restauration")
+            notice = if (ok) ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH) else t("Reset failed", "Échec de la restauration")
             busy = false
         }
     }) { Text(t("Restore original configuration", "Rétablir la configuration d’origine")) }
@@ -105,7 +105,7 @@ internal fun SensorSettings(language: String) {
         val snapshot = selected
         scope.launch {
             val ok = withContext(Dispatchers.IO) { prefs.saveSensors(snapshot) }
-            notice = if (ok) t("Saved for next session","Enregistré pour la prochaine session") else t("Save failed","Échec de l’enregistrement")
+            notice = if (ok) ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH) else t("Save failed","Échec de l’enregistrement")
             busy = false
         }
     }) { Text(t("Save sensors","Enregistrer les capteurs")) }

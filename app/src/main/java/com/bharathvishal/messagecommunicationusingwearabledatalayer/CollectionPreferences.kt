@@ -15,6 +15,14 @@ import org.json.JSONArray
 /** Only settings are persisted; no acquired measurements. */
 internal class CollectionPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("pemesa_collection_v2", Context.MODE_PRIVATE)
+    companion object { private val configLock = Any() }
+    private fun nextVersion() = java.util.UUID.randomUUID().toString()
+    private fun versionLocked(): String {
+        val current = prefs.getString("config_version", null)
+        if (current != null && validConfigVersion(current)) return current
+        return nextVersion().also { check(prefs.edit().putString("config_version", it).commit()) }
+    }
+    fun version(): String = synchronized(configLock) { versionLocked() }
     val custom: Boolean get() = prefs.getBoolean("custom", false)
     val url: String get() = prefs.getString("url", "") ?: ""
     val organization: String get() = prefs.getString("org", "") ?: ""
@@ -29,8 +37,10 @@ internal class CollectionPreferences(context: Context) {
     val site: String get() = prefs.getString("site", "") ?: ""
     val protocol: String get() = prefs.getString("protocol", "") ?: ""
     val vibration: Boolean get() = prefs.getBoolean("vibration", false)
-    fun saveAcquisition(hz: Int, interval: Int): Boolean = validAcquisition(hz, interval) &&
-        prefs.edit().putInt("hz", hz).putInt("interval", interval).commit()
+    fun saveAcquisition(hz: Int, interval: Int): Boolean = synchronized(configLock) {
+        validAcquisition(hz, interval) && ((this.hz == hz && this.interval == interval) ||
+            prefs.edit().putInt("hz", hz).putInt("interval", interval).putString("config_version", nextVersion()).commit())
+    }
     fun saveStudy(project: String, experiment: String, site: String, protocol: String): Boolean =
         listOf(project, experiment, site, protocol).all { it.length <= 120 && it.none(Char::isISOControl) } &&
         prefs.edit().putString("project", project).putString("experiment", experiment)
@@ -40,7 +50,7 @@ internal class CollectionPreferences(context: Context) {
         .put("hz", hz).put("interval", interval).put("sensors", JSONArray(sensors.toList()))
         .put("project", project).put("experiment", experiment).put("site", site).put("protocol", protocol)
         .put("vibration", vibration)
-    fun importSettings(input: JSONObject): Boolean = runCatching {
+    fun importSettings(input: JSONObject): Boolean = synchronized(configLock) { runCatching {
         require(input.getInt("version") == 1)
         val frequency = input.getInt("hz")
         val seconds = input.getInt("interval")
@@ -51,8 +61,9 @@ internal class CollectionPreferences(context: Context) {
         require(study.values.all { it.length <= 120 && it.none(Char::isISOControl) })
         prefs.edit().putInt("hz", frequency).putInt("interval", seconds)
             .putStringSet("sensors", keys).putBoolean("vibration", input.getBoolean("vibration"))
+            .putString("config_version", nextVersion())
             .apply { study.forEach { (key, value) -> putString(key, value) } }.commit()
-    }.getOrDefault(false)
+    }.getOrDefault(false) }
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getKey("pemesa_influx_v2", null) as? SecretKey)?.let { return it }
@@ -74,19 +85,32 @@ internal class CollectionPreferences(context: Context) {
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)))
         return String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8)
     }
-    fun saveServer(url: String, org: String, activity: String, wearable: String, token: String): Boolean = runCatching {
+    fun saveServer(url: String, org: String, activity: String, wearable: String, token: String): Boolean = synchronized(configLock) { runCatching {
         require(validServerUrl(url) && org.isNotBlank() && activity.isNotBlank() && wearable.isNotBlank() && activity != wearable)
         val encrypted = if (token.isNotBlank()) encrypt(token) else {
             decrypt()
             requireNotNull(prefs.getString("token", null))
         }
         prefs.edit().putBoolean("custom", true).putString("url", url).putString("org", org)
-            .putString("activity", activity).putString("wearable", wearable).putString("token", encrypted).commit()
-    }.getOrDefault(false)
-    fun resetServer(): Boolean = prefs.edit().remove("custom").remove("url").remove("org")
-        .remove("activity").remove("wearable").remove("token").commit()
-    fun saveSensors(keys: Set<String>): Boolean = validSensorSelection(keys) &&
-        prefs.edit().putStringSet("sensors", keys.toSet()).commit()
+            .putString("activity", activity).putString("wearable", wearable).putString("token", encrypted)
+            .putString("config_version", nextVersion()).commit()
+    }.getOrDefault(false) }
+    fun resetServer(): Boolean = synchronized(configLock) {
+        prefs.edit().remove("custom").remove("url").remove("org")
+            .remove("activity").remove("wearable").remove("token").putString("config_version", nextVersion()).commit()
+    }
+    fun saveSensors(keys: Set<String>): Boolean = synchronized(configLock) {
+        validSensorSelection(keys) && (sensors == keys ||
+            prefs.edit().putStringSet("sensors", keys.toSet()).putString("config_version", nextVersion()).commit())
+    }
+    fun configuration(): ConfigSnapshot = synchronized(configLock) {
+        require(validSensorSelection(sensors) && validAcquisition(hz, interval))
+        val json = JSONObject().put("sensors", JSONArray(sensors.sorted())).put("hz", hz).put("interval", interval)
+        if (custom) json.put("server", JSONObject().put("url", url).put("org", organization)
+            .put("activity", activity).put("wearable", wearable).put("token", decrypt()))
+        val payload = json.toString()
+        ConfigSnapshot(versionLocked(), configDigest(payload), payload)
+    }
     fun envelope(session: String): JSONObject {
         require(validSensorSelection(sensors))
         require(validAcquisition(hz, interval))

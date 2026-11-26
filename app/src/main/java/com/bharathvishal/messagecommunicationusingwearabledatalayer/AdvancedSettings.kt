@@ -23,7 +23,8 @@ internal fun AdvancedSettings(page: String, language: String) {
         busy = true
         scope.launch {
             val ok = withContext(Dispatchers.IO) { runCatching(action).getOrDefault(false) }
-            notice = if (ok) t("Saved", "Enregistré") else t("Operation failed. Check the settings.", "Échec. Vérifiez les paramètres.")
+            notice = if (ok && page == "acquisition") ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH)
+            else if (ok) t("Saved", "Enregistré") else t("Operation failed. Check the settings.", "Échec. Vérifiez les paramètres.")
             busy = false
         }
     }
@@ -31,8 +32,8 @@ internal fun AdvancedSettings(page: String, language: String) {
         "acquisition" -> {
             var hz by remember { mutableStateOf(prefs.hz) }
             var interval by remember { mutableStateOf(prefs.interval) }
-            Text(t("Changes apply only at the next Start. The original settings are 50 Hz and 10 seconds.",
-                "Les changements s’appliquent au prochain Start. Les valeurs d’origine sont 50 Hz et 10 secondes."))
+            Text(t("Save synchronizes the watch. Changes apply at the next Start. Defaults: 50 Hz and 10 seconds.",
+                "Save synchronise la montre. Les changements s’appliquent au prochain Start. Valeurs d’origine : 50 Hz et 10 secondes."))
             Text(t("Sampling frequency", "Fréquence d’échantillonnage"), style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(25, 50, 100).forEach { value ->

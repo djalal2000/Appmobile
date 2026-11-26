@@ -104,6 +104,8 @@ class WearCommunicationManager(
     private val controlScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var startJob: Job? = null
     private var diagnosticJob: Job? = null
+    private var configJob: Job? = null
+    private val configurationStore = WatchConfigurationStore(context)
     private var enabledSensors = SENSOR_KEYS.toSet()
     private val availableSensors = mutableSetOf<Int>()
     private val freshSensors = mutableSetOf<Int>()
@@ -164,6 +166,7 @@ class WearCommunicationManager(
             if (path != "/pemesa/device-v1" && !authorized(messageEvent.sourceNodeId)) return
             when (path) {
                 "/pemesa/device-v1" -> receiveDeviceRequest(messageEvent.sourceNodeId, messageStr)
+                CONFIG_PATH -> receiveConfiguration(messageEvent.sourceNodeId, messageStr)
                 APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
                     val nodeId = messageEvent.sourceNodeId
                     val payload = "AppOpenWearableACK".toByteArray()
@@ -221,7 +224,7 @@ class WearCommunicationManager(
         status.put("pending", status.getLong("pending") + if (pendingWearable.size > 0) 1L else 0L)
     }
 
-    private fun associationBusy(): Boolean = sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L
+    private fun associationBusy(): Boolean = sensorTimer != null || startJob?.isActive == true || configJob?.isActive == true || transmit.pendingCount() > 0L
 
     fun showPairingCode() {
         if (associationBusy()) {
@@ -273,6 +276,46 @@ class WearCommunicationManager(
                 else -> return@post
             }
             Wearable.getMessageClient(context).sendMessage(node, "/pemesa/device-v1", reply.toString().toByteArray(StandardCharsets.UTF_8))
+        }
+    }
+
+    private fun receiveConfiguration(node: String, message: String) {
+        commandHandler.post {
+            if (!authorized(node) || message.length > 32768) return@post
+            val request = runCatching { org.json.JSONObject(message) }.getOrNull() ?: return@post
+            val id = request.optString("id")
+            if (!validConfigVersion(id)) return@post
+            fun reply(result: String, value: StoredConfiguration? = null) {
+                val response = org.json.JSONObject().put("id", id).put("watchId", watchId).put("result", result)
+                    .put("version", value?.version ?: "").put("hash", value?.hash ?: "")
+                Wearable.getMessageClient(context).sendMessage(node, CONFIG_PATH, response.toString().toByteArray(Charsets.UTF_8))
+            }
+            val action = request.optString("action")
+            if (action != "status" && action != "save") return@post
+            if (configJob?.isActive == true || startJob?.isActive == true ||
+                (action == "save" && sensorTimer != null)) { reply("BUSY"); return@post }
+            configJob = controlScope.launch {
+                try {
+                    val existing = withContext(Dispatchers.IO) { configurationStore.load(node) }
+                    if (action == "status") { reply("OK", existing); return@launch }
+                    val version = request.optString("version")
+                    val hash = request.optString("hash")
+                    val payload = request.optString("payload")
+                    if (!validConfigVersion(version) || !validConfigDigest(hash) ||
+                        configDigest(payload) != hash || !validConfigPayload(payload)) {
+                        reply("REJECTED"); return@launch
+                    }
+                    if (existing != null && configMatches(version, hash, existing.version, existing.hash)) {
+                        reply("OK", existing); return@launch
+                    }
+                    if (!canReplaceConfig(request.optString("expectedVersion"), request.optString("expectedHash"),
+                            existing?.version ?: "", existing?.hash ?: "")) { reply("REJECTED"); return@launch }
+                    val value = StoredConfiguration(version, hash, payload)
+                    if (withContext(Dispatchers.IO) { configurationStore.save(node, value) }) reply("OK", value)
+                    else reply("REJECTED")
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { reply("REJECTED") }
+            }
         }
     }
 
@@ -359,18 +402,25 @@ class WearCommunicationManager(
             val config = envelope.optJSONObject("configuration")
             if (payload.contains("Action: Start") && config == null) { reply("REJECTED"); return@post }
             if (payload.contains("Action: Start") && config != null) {
-                if (startJob?.isActive == true || sensorTimer != null) { reply("REJECTED"); return@post }
+                if (startJob?.isActive == true || configJob?.isActive == true || sensorTimer != null) { reply("REJECTED"); return@post }
                 if (validatedCommand(payload, false) == null) { reply("REJECTED"); return@post }
                 startJob = controlScope.launch {
                     try {
-                        val keys = config.getJSONArray("sensors").let { array ->
+                        val stored = withContext(Dispatchers.IO) { configurationStore.load(node) }
+                        if (stored == null || !configMatches(config.optString("version"), config.optString("hash"), stored.version, stored.hash)) {
+                            HealthJournal.add(HealthCode.PREFLIGHT_FAILED)
+                            reply("REJECTED")
+                            return@launch
+                        }
+                        val saved = stored.json()
+                        val keys = saved.getJSONArray("sensors").let { array ->
                             (0 until array.length()).map { array.getString(it) }.toSet()
                         }
                         val session = config.getString("session")
-                        val hz = config.optInt("hz", 50)
-                        val interval = config.optInt("interval", 10)
+                        val hz = saved.getInt("hz")
+                        val interval = saved.getInt("interval")
                         if (!validAcquisition(hz, interval) || !validSensorSelection(keys) || runCatching { UUID.fromString(session) }.isFailure ||
-                            !transmit.prepare(config.optJSONObject("server"))) {
+                            !transmit.prepare(saved.optJSONObject("server"))) {
                             HealthJournal.add(HealthCode.PREFLIGHT_FAILED)
                             reply("REJECTED")
                             return@launch
@@ -378,7 +428,7 @@ class WearCommunicationManager(
                         enabledSensors = keys
                         samplingPeriodMs = 1000L / hz
                         pendingSamples = SampleBatch(batchSizeFor(hz, interval))
-                        studyMetadata = config.optJSONObject("study") ?: org.json.JSONObject()
+                        studyMetadata = org.json.JSONObject()
                         sessionId = session
                         reply(completedCommands.result(node, id) { executeConfirmedCommand(payload) })
                     } catch (cancelled: CancellationException) {

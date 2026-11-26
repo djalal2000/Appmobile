@@ -42,6 +42,26 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     private var currentLanguage by mutableStateOf(AppLanguage.ENGLISH)
+    private var configurationMonitor: kotlinx.coroutines.Job? = null
+
+    override fun onResume() {
+        super.onResume()
+        configurationMonitor?.cancel()
+        configurationMonitor = lifecycleScope.launch {
+            while (true) {
+                // A status exchange is small; full configuration is sent only if different.
+                if (WatchRegistry(this@MainActivity).pinned == null)
+                    ConfigurationSync.synchronize(this@MainActivity)
+                kotlinx.coroutines.delay(15000L)
+            }
+        }
+    }
+
+    override fun onPause() {
+        configurationMonitor?.cancel()
+        configurationMonitor = null
+        super.onPause()
+    }
 
     private fun tr(text: String) = AppLanguage.translate(currentLanguage, text)
 

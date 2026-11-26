@@ -318,8 +318,21 @@ class ValidationActivity : AppCompatActivity() {
             try {
                 val configuration = if (message.contains("Action: Start")) {
                     try {
-                        withContext(Dispatchers.IO) { CollectionPreferences(this@ValidationActivity).envelope(java.util.UUID.randomUUID().toString()) }
-                    } catch (error: Exception) {
+                        val node = WatchRegistry(this@ValidationActivity).pinned
+                        val snapshot = withContext(Dispatchers.IO) { CollectionPreferences(this@ValidationActivity).configuration() }
+                        val sync = ConfigurationSync.synchronize(this@ValidationActivity, node, forStart = true)
+                        if (sync != ConfigSyncResult.CONFIRMED ||
+                            CollectionPreferences(this@ValidationActivity).version() != snapshot.version) {
+                            commandNotice("Configuration not confirmed. Reconnect the watch or check Settings.",
+                                "Configuration non confirmée. Reconnectez la montre ou vérifiez les paramètres.")
+                            node?.let { WatchRegistry(this@ValidationActivity).release(it) }
+                            applyStoppedState()
+                            onFailure()
+                            return@launch
+                        }
+                        snapshot.startEnvelope(java.util.UUID.randomUUID().toString())
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (error: Exception) {
                         HealthJournal.add(HealthCode.CONFIG_INVALID)
                         commandNotice("Invalid settings. Check the InfluxDB token.", "Paramètres invalides. Vérifiez le jeton InfluxDB.")
                         communicator.lastNodeId?.let { WatchRegistry(this@ValidationActivity).release(it) }
@@ -327,6 +340,10 @@ class ValidationActivity : AppCompatActivity() {
                         return@launch
                     }
                 } else null
+                if (configuration != null && commandGate.stopping) {
+                    // Stop was requested before Start was sent. Keep the pin until Stop is confirmed.
+                    return@launch
+                }
                 val result = communicator.sendConfirmedCommand(message, configuration)
                 when (result) {
                     "OK" -> {
