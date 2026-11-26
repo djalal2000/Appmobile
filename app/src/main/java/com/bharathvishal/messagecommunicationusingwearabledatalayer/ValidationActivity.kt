@@ -579,13 +579,17 @@ class ValidationActivity : AppCompatActivity() {
             ContextCompat.getColor(this, android.R.color.holo_red_dark) -> uiColor("#B32636")
             else -> originalColor
         }
+        val outline = androidx.core.graphics.ColorUtils.blendARGB(fill, uiColor("#142D3A"), 0.16f)
         val states = android.graphics.drawable.StateListDrawable().apply {
-            addState(intArrayOf(-android.R.attr.state_enabled), uiRounded(uiColor("#DCE5E8"), 14))
-            addState(intArrayOf(), uiRounded(fill, 14))
+            addState(intArrayOf(-android.R.attr.state_enabled),
+                uiRounded(uiColor("#DCE5E8"), 20, uiColor("#CCD8DC")))
+            addState(intArrayOf(), uiRounded(fill, 20, outline))
         }
         button.background = android.graphics.drawable.RippleDrawable(
-            android.content.res.ColorStateList.valueOf(0x33FFFFFF), states,
-            uiRounded(android.graphics.Color.WHITE, 14)
+            android.content.res.ColorStateList.valueOf(
+                if (button === binding.startRecordingButton) 0x18173E59 else 0x33FFFFFF
+            ), states,
+            uiRounded(android.graphics.Color.WHITE, 20)
         )
         button.backgroundTintList = null
         (button as? androidx.appcompat.widget.AppCompatButton)?.supportBackgroundTintList = null
@@ -597,10 +601,19 @@ class ValidationActivity : AppCompatActivity() {
             arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
             intArrayOf(uiColor("#526671"), enabledText)
         ))
+        applyModernButtonTypography(button, 15f)
+    }
+
+    /** Keep controls compact, with legible medium-weight text and a generous touch target. */
+    private fun applyModernButtonTypography(button: Button, sizeSp: Float) {
         button.setAllCaps(false)
+        button.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        button.textSize = sizeSp
+        button.letterSpacing = 0.01f
+        button.gravity = android.view.Gravity.CENTER
         button.minHeight = uiDp(52)
         button.minimumHeight = uiDp(52)
-        button.setPadding(uiDp(8), uiDp(10), uiDp(8), uiDp(10))
+        button.setPadding(uiDp(12), uiDp(10), uiDp(12), uiDp(10))
         button.elevation = 0f
         button.stateListAnimator = null
     }
@@ -644,10 +657,6 @@ class ValidationActivity : AppCompatActivity() {
         uiStyleButton(binding.startRecordingButton, uiColor("#B9E0FA"))
         uiStyleButton(binding.pauseRecordingButton, uiColor("#76521E"))
         uiStyleButton(binding.stopRecordingButton, uiColor("#B32636"))
-        listOf(binding.ActivityButton1, binding.ActivityButton2, binding.ActivityButton3,
-            binding.ActivityButton4, binding.ActivityButton5, binding.ActivityButton6).forEach {
-            it.textSize = 13f
-        }
         // Apply the current selection colors to all activity buttons.
         updateActivityButtonColor()
         // Animate entry without delaying input handling.
@@ -666,12 +675,12 @@ class ValidationActivity : AppCompatActivity() {
     private fun styleActivityButton(button: Button, fill: Int) {
         if (activityButtonTargets[button] == fill) return
         activityButtonAnimations.remove(button)?.cancel()
-        val previous = activityButtonColors[button] ?: uiColor("#F1F6F7")
-        val shape = uiRounded(previous, 14, uiColor("#C6D3D6"))
+        val previous = activityButtonColors[button] ?: uiColor("#FFFFFF")
+        val shape = uiRounded(previous, 18, activityOutline(previous))
         val ripple = android.graphics.drawable.RippleDrawable(
-            android.content.res.ColorStateList.valueOf(0x22000000),
+            android.content.res.ColorStateList.valueOf(0x16142D3A),
             shape,
-            uiRounded(android.graphics.Color.WHITE, 14)
+            uiRounded(android.graphics.Color.WHITE, 18)
         )
         button.background = ripple
         // Clear both framework and AppCompat tints after replacing the background.
@@ -680,20 +689,17 @@ class ValidationActivity : AppCompatActivity() {
         ripple.setTintList(null)
         val visibleShape = ripple.getDrawable(0) as android.graphics.drawable.GradientDrawable
         visibleShape.setColor(previous)
+        visibleShape.setStroke(uiDp(1), activityOutline(previous))
         button.setTextColor(android.content.res.ColorStateList(
             arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
             intArrayOf(uiColor("#526671"), android.graphics.Color.BLACK)
         ))
-        button.setAllCaps(false)
-        button.minHeight = uiDp(52)
-        button.minimumHeight = uiDp(52)
-        button.setPadding(uiDp(8), uiDp(10), uiDp(8), uiDp(10))
-        button.elevation = 0f
-        button.stateListAnimator = null
+        applyModernButtonTypography(button, 14f)
         activityButtonTargets[button] = fill
 
         if (previous == fill) {
             visibleShape.setColor(fill)
+            visibleShape.setStroke(uiDp(1), activityOutline(fill))
             activityButtonColors[button] = fill
             button.invalidate()
             return
@@ -703,6 +709,7 @@ class ValidationActivity : AppCompatActivity() {
             addUpdateListener {
                 val color = it.animatedValue as Int
                 visibleShape.setColor(color)
+                visibleShape.setStroke(uiDp(1), activityOutline(color))
                 activityButtonColors[button] = color
                 ripple.invalidateSelf()
                 button.invalidate()
@@ -712,8 +719,11 @@ class ValidationActivity : AppCompatActivity() {
         animation.start()
     }
 
+    private fun activityOutline(fill: Int): Int =
+        androidx.core.graphics.ColorUtils.blendARGB(fill, uiColor("#36566B"), 0.24f)
+
     private fun updateActivityButtonColor() {
-        val idle = uiColor("#F1F6F7")
+        val idle = uiColor("#FFFFFF")
         val selected = uiColor("#D6EDA5")
         val unlabeled = uiColor("#FFD7A6")
         activityButtons().forEachIndexed { index, button ->

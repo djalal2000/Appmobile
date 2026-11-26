@@ -238,7 +238,7 @@
                         android:gravity="center" />
                 </LinearLayout>
 
-                <Button
+                <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/pauseRecordingButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -246,7 +246,7 @@
                     android:enabled="false"
                     android:layout_marginBottom="16dp" />
 
-                <Button
+                <androidx.appcompat.widget.AppCompatButton
                     android:id="@+id/stopRecordingButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
