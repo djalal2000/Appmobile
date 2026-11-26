@@ -87,3 +87,5 @@ See the [LICENSE](LICENSE) file (Apache License, Version 2.0).
 ## Credential management
 
 Use separate, least-privilege write tokens for research devices and read tokens for analysis. Rotate and revoke tokens using the InfluxDB administration interface. Do not commit tokens or private endpoints, including in build configuration or migration scripts. A token removed from current source may remain in historical commits; revoke any previously committed token before distributing the repository or APKs. Both mobile and watch applications must be updated together for this configuration protocol.
+
+The phone retains up to three distinct previous values per server field. Previous tokens are encrypted, masked in the interface, and selectable only for their original URL, organization, and buckets. History is local to the phone and is never synchronized with the watch. Settings > History & cache provides separate actions to remove the history or temporary phone cache files without removing the active configuration or acquisition buffers.

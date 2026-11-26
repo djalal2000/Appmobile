@@ -93,6 +93,7 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
         "acquisition" -> ui("Acquisition", "Acquisition")
         "alerts" -> ui("Notifications", "Notifications")
         "diagnostics" -> "Diagnostics"
+        "storage" -> ui("History & cache", "Historique et cache")
         else -> name(code)
     }
 
@@ -154,6 +155,8 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                         icon = Icons.Filled.Notifications, onClick = { selectedCode = "alerts" })
                     SettingsRow(title = "Diagnostics", subtitle = ui("Test and troubleshoot", "Tester et résoudre les problèmes"),
                         icon = Icons.Filled.Build, onClick = { selectedCode = "diagnostics" })
+                    SettingsRow(title = ui("History & cache", "Historique et cache"), subtitle = ui("Clear saved suggestions or temporary files", "Effacer les suggestions ou fichiers temporaires"),
+                        icon = Icons.Filled.Storage, onClick = { selectedCode = "storage" })
                 } else if (code == "professions") {
                     SectionHeading(ui("Choose a profession", "Choisir un métier"))
                     professions.forEach { option ->
@@ -176,6 +179,8 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                     ServerSettings(language)
                 } else if (code == "sensors") {
                     SensorSettings(language)
+                } else if (code == "storage") {
+                    StorageSettings(language)
                 } else if (code == "diagnostics") {
                     DiagnosticsSettings(language, onNavigate = { selectedCode = it })
                 } else if (code in setOf("acquisition", "alerts")) {

@@ -1,6 +1,8 @@
 package com.bharathvishal.messagecommunicationusingwearabledatalayer
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,9 +16,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-private fun ConfigField(value: String, change: (String) -> Unit, label: String, enabled: Boolean) {
-    OutlinedTextField(value, change, label = { Text(label) }, singleLine = true, enabled = enabled,
-        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+private fun ConfigField(value: String, change: (String) -> Unit, label: String, enabled: Boolean,
+                        suggestions: List<String>, historyLabel: String) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedTextField(value, change, label = { Text(label) }, singleLine = true, enabled = enabled,
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+            trailingIcon = if (suggestions.isEmpty()) null else {
+                { IconButton(enabled = enabled, onClick = { expanded = true }) {
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = historyLabel)
+                } }
+            })
+        DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
+            suggestions.take(SERVER_HISTORY_LIMIT).forEach { previous ->
+                DropdownMenuItem(text = { Text(previous) }, onClick = { expanded = false; change(previous) })
+            }
+        }
+    }
 }
 
 @Composable
@@ -30,29 +46,61 @@ internal fun ServerSettings(language: String) {
     var wearable by remember { mutableStateOf(prefs.wearable) }
     var token by remember { mutableStateOf("") }
     var savedToken by remember { mutableStateOf(prefs.hasToken) }
+    var savedTarget by remember { mutableStateOf(ServerTarget(prefs.url, prefs.organization, prefs.activity, prefs.wearable)) }
+    var history by remember { mutableStateOf(ServerHistorySuggestions()) }
+    var previousTokenId by remember { mutableStateOf<String?>(null) }
+    var tokenMenu by remember { mutableStateOf(false) }
+    var confirmHistoryClear by remember { mutableStateOf(false) }
     var custom by remember { mutableStateOf(prefs.custom) }
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { history = withContext(Dispatchers.IO) { prefs.serverHistory() } }
+    val target = ServerTarget(url.trim(), org.trim(), activity.trim(), wearable.trim())
+    val canKeepToken = savedToken && target == savedTarget
+    val tokenChoices = history.tokens.filter { it.target == target }
+    val selectedToken = tokenChoices.firstOrNull { it.id == previousTokenId }
+    fun destinationChanged() { previousTokenId = null; token = "" }
+    val historyLabel = t("Previous values", "Valeurs précédentes")
     Text(if (custom) t("Custom server", "Serveur personnalisé") else t("Server not configured", "Serveur non configuré"),
         style = MaterialTheme.typography.titleMedium)
     Text(t("HTTPS only. Configuration is required before recording. Save synchronizes the watch; changes apply at the next Start. Token encrypted on both devices.",
         "HTTPS uniquement. Configuration obligatoire avant la collecte. Enregistrer synchronise la montre ; réglages appliqués au prochain Start. Jeton chiffré sur les deux appareils."))
-    ConfigField(url, { url = it }, t("Server HTTPS URL", "URL HTTPS du serveur"), !busy)
-    ConfigField(org, { org = it }, t("Organization", "Organisation"), !busy)
-    ConfigField(activity, { activity = it }, t("Activity bucket", "Bucket activité"), !busy)
-    ConfigField(wearable, { wearable = it }, t("Wearable bucket", "Bucket montre"), !busy)
-    OutlinedTextField(token, { token = it }, label = { Text("API Token") }, singleLine = true,
-        visualTransformation = PasswordVisualTransformation(), enabled = !busy,
-        supportingText = { Text(if (savedToken) t("Leave blank to keep saved token", "Laisser vide pour conserver le jeton") else t("Write token required", "Jeton d’écriture requis")) },
-        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+    ConfigField(url, { url = it; destinationChanged() }, t("Server HTTPS URL", "URL HTTPS du serveur"), !busy, history.fields["url"].orEmpty(), historyLabel)
+    ConfigField(org, { org = it; destinationChanged() }, t("Organization", "Organisation"), !busy, history.fields["org"].orEmpty(), historyLabel)
+    ConfigField(activity, { activity = it; destinationChanged() }, t("Activity bucket", "Bucket activité"), !busy, history.fields["activity"].orEmpty(), historyLabel)
+    ConfigField(wearable, { wearable = it; destinationChanged() }, t("Wearable bucket", "Bucket montre"), !busy, history.fields["wearable"].orEmpty(), historyLabel)
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedTextField(token, { token = it; previousTokenId = null }, label = { Text("API Token") }, singleLine = true,
+            visualTransformation = PasswordVisualTransformation(), enabled = !busy,
+            supportingText = { Text(when {
+                selectedToken != null -> t("Previous token selected (hidden)", "Jeton précédent sélectionné (masqué)")
+                canKeepToken -> t("Leave blank to keep saved token", "Laisser vide pour conserver le jeton")
+                else -> t("Write token required for this destination", "Jeton d’écriture requis pour cette destination")
+            }) },
+            trailingIcon = if (tokenChoices.isEmpty()) null else {
+                { IconButton(enabled = !busy, onClick = { tokenMenu = true }) {
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = historyLabel)
+                } }
+            },
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))
+        DropdownMenu(expanded = tokenMenu && !busy, onDismissRequest = { tokenMenu = false }) {
+            tokenChoices.forEachIndexed { index, choice ->
+                DropdownMenuItem(text = { Text(t("Previous token ${index + 1} (hidden)", "Jeton précédent ${index + 1} (masqué)")) },
+                    onClick = { token = ""; previousTokenId = choice.id; tokenMenu = false })
+            }
+        }
+    }
     Button(modifier = Modifier.fillMaxWidth(), enabled = !busy && validServerUrl(url.trim()) &&
-        org.isNotBlank() && activity.isNotBlank() && wearable.isNotBlank() && activity.trim() != wearable.trim() && (savedToken || token.isNotBlank()),
+        org.isNotBlank() && activity.isNotBlank() && wearable.isNotBlank() && activity.trim() != wearable.trim() && (canKeepToken || token.isNotBlank() || selectedToken != null),
         onClick = {
             busy = true
             scope.launch {
-                val ok = withContext(Dispatchers.IO) { prefs.saveServer(url.trim(), org.trim(), activity.trim(), wearable.trim(), token.trim()) }
-                if (ok) { custom = true; savedToken = true; token = "" }
+                val ok = withContext(Dispatchers.IO) { prefs.saveServer(target.url, target.org, target.activity, target.wearable, token.trim(), selectedToken?.id) }
+                if (ok) {
+                    custom = true; savedToken = true; savedTarget = target; token = ""; previousTokenId = null
+                    history = withContext(Dispatchers.IO) { prefs.serverHistory() }
+                }
                 notice = if (ok) ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH)
                     else t("Could not save. Re-enter the token.", "Enregistrement impossible. Ressaisissez le jeton.")
                 busy = false
@@ -84,13 +132,31 @@ internal fun ServerSettings(language: String) {
         busy = true
         scope.launch {
             val ok = withContext(Dispatchers.IO) { prefs.resetServer() }
-            if (ok) { url = ""; org = ""; activity = "activity"; wearable = "wearable"; token = ""; savedToken = false; custom = false }
+            if (ok) { url = ""; org = ""; activity = "activity"; wearable = "wearable"; token = ""; previousTokenId = null; savedToken = false; custom = false }
             notice = if (ok) t("Server settings cleared. ", "Paramètres du serveur effacés. ") +
                 ConfigurationSync.message(ConfigurationSync.synchronize(context), language == AppLanguage.FRENCH)
                 else t("Reset failed", "Échec de la réinitialisation")
             busy = false
         }
     }) { Text(t("Clear server configuration", "Effacer la configuration du serveur")) }
+    OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = { confirmHistoryClear = true }) {
+        Text(t("Clear InfluxDB history", "Effacer l’historique InfluxDB"))
+    }
+    if (confirmHistoryClear) AlertDialog(onDismissRequest = { confirmHistoryClear = false },
+        title = { Text(t("Clear InfluxDB history?", "Effacer l’historique InfluxDB ?")) },
+        text = { Text(t("Previous values and tokens will be removed from this phone. The active configuration is kept.",
+            "Les anciennes valeurs et anciens jetons seront effacés de ce téléphone. La configuration active est conservée.")) },
+        confirmButton = { TextButton(onClick = {
+            confirmHistoryClear = false; busy = true
+            scope.launch {
+                try {
+                    val ok = withContext(Dispatchers.IO) { prefs.clearServerHistory() }
+                    if (ok) { history = ServerHistorySuggestions(); previousTokenId = null }
+                    notice = if (ok) t("History cleared.", "Historique effacé.") else t("Could not clear history.", "Impossible d’effacer l’historique.")
+                } finally { busy = false }
+            }
+        }) { Text(t("Clear", "Effacer")) } },
+        dismissButton = { TextButton(onClick = { confirmHistoryClear = false }) { Text(t("Cancel", "Annuler")) } })
     if (notice.isNotEmpty()) Text(notice)
 }
 
