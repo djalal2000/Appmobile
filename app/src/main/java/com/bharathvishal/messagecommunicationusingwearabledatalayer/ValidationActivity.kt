@@ -615,7 +615,28 @@ class ValidationActivity : AppCompatActivity() {
         button.minimumHeight = uiDp(52)
         button.setPadding(uiDp(12), uiDp(10), uiDp(12), uiDp(10))
         button.elevation = 0f
-        button.stateListAnimator = null
+    }
+
+    /** Animate native pressed states without consuming touch events or delaying clicks. */
+    private fun installButtonPressEffect(button: Button) {
+        fun scaleTo(scale: Float, durationMs: Long): android.animation.AnimatorSet =
+            android.animation.AnimatorSet().apply {
+                playTogether(
+                    android.animation.ObjectAnimator.ofFloat(button, "scaleX", scale),
+                    android.animation.ObjectAnimator.ofFloat(button, "scaleY", scale)
+                )
+                duration = durationMs
+                interpolator = android.view.animation.DecelerateInterpolator()
+            }
+
+        button.stateListAnimator = android.animation.StateListAnimator().apply {
+            addState(
+                intArrayOf(android.R.attr.state_enabled, android.R.attr.state_pressed),
+                scaleTo(0.96f, 85L)
+            )
+            addState(intArrayOf(-android.R.attr.state_enabled), scaleTo(1f, 0L))
+            addState(intArrayOf(), scaleTo(1f, 150L))
+        }
     }
 
     private fun uiStatusStyle(fill: String, ink: String) {
@@ -659,6 +680,13 @@ class ValidationActivity : AppCompatActivity() {
         uiStyleButton(binding.stopRecordingButton, uiColor("#B32636"))
         // Apply the current selection colors to all activity buttons.
         updateActivityButtonColor()
+        // Install once; later color updates must not restart a running press animation.
+        (activityButtons() + listOf(
+            binding.toggleActivityButton,
+            binding.startRecordingButton,
+            binding.pauseRecordingButton,
+            binding.stopRecordingButton
+        )).forEach(::installButtonPressEffect)
         // Animate entry without delaying input handling.
         binding.recordingButtonsContainer.apply {
             alpha = 0.86f
