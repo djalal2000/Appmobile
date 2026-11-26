@@ -114,6 +114,8 @@ internal fun HealthJournalPanel(language: String, report: DiagnosticResult?, ana
                         TextButton(onClick = { onNavigate("sensors") }) { Text(t("Review sensors and watch permissions", "Vérifier les capteurs et autorisations montre")) }
                     HealthCode.QUEUE_FULL, HealthCode.WRITE_FAILED, HealthCode.WRITE_RETRY ->
                         Text(t("Check watch network and wait for outstanding writes.", "Vérifiez le réseau montre et attendez les écritures restantes."), style = MaterialTheme.typography.bodySmall)
+                    HealthCode.THERMAL_HIGH, HealthCode.THERMAL_CRITICAL ->
+                        Text(t("Let the watch cool. Stop the experiment safely if the warning persists.", "Laissez refroidir la montre. Arrêtez l’expérience en sécurité si l’alerte persiste."), style = MaterialTheme.typography.bodySmall)
                     HealthCode.COMMAND_UNKNOWN, HealthCode.WATCH_LOST, HealthCode.WATCH_TIMEOUT ->
                         Text(t("Check the watch connection and confirm recording state.", "Vérifiez la connexion et confirmez l’état de collecte."), style = MaterialTheme.typography.bodySmall)
                     else -> Unit

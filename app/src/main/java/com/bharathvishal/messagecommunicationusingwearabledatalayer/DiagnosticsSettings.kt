@@ -132,6 +132,15 @@ internal fun DiagnosticsSettings(language: String, onNavigate: (String) -> Unit)
             val battery = json.optInt("battery", -1)
             DiagnosticCard(t("Watch battery", "Batterie montre"), if (battery in 0..100) "$battery%" + if (battery <= 20) t(" · Recharge recommended", " · Recharge conseillée") else "" else "—")
             DiagnosticCard(t("Watch memory", "Mémoire montre"), if (json.has("freeMb")) "${json.optLong("freeMb")} MB " + t("available system RAM", "RAM système disponible") else "—")
+            val thermal = json.optInt("thermalStatus", -1)
+            DiagnosticCard(t("Watch thermal status", "État thermique de la montre"), when (thermal) {
+                0 -> t("Normal", "Normal")
+                1 -> t("Light thermal throttling", "Limitation thermique légère")
+                2 -> t("Moderate thermal throttling", "Limitation thermique modérée")
+                3 -> t("Severe thermal throttling — let the watch cool", "Limitation thermique sévère — laissez refroidir la montre")
+                4, 5, 6 -> t("Critical thermal state — stop the experiment safely", "État thermique critique — arrêtez l’expérience en sécurité")
+                else -> t("Unavailable", "Indisponible")
+            })
             json.optJSONObject("writes")?.let { stats ->
                 DiagnosticCard(t("Transmission statistics", "Statistiques des transmissions"), t("Pending: ", "En attente : ") + stats.optLong("pending") + t(" · Failed: ", " · Échecs : ") + stats.optLong("failures"))
             }

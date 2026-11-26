@@ -53,6 +53,8 @@ class WearCommunicationManager(
     var mobileNodeUri: String? = null
 
     private lateinit var sensorManager: SensorManager
+    private var sensorThread: android.os.HandlerThread? = null
+    private var sensorListener: SensorEventListener? = null
     private var accel: Sensor? = null
     private var gyro: Sensor? = null
     private var gravitySensor: Sensor? = null
@@ -101,7 +103,10 @@ class WearCommunicationManager(
     private var currentActivityLabel = "Unlabeled activity"
     private var sessionPersonId = "unknown"
     private val wearableFlush = Runnable { synchronized(recordingLock) { flushWearableLocked() } }
-    private val sensorUiRefresh = Runnable { sensorUiScheduled = false; if (!stop && !paused) updateUI() }
+    private val sensorUiRefresh = Runnable {
+        val refresh = synchronized(recordingLock) { sensorUiScheduled = false; !stop && !paused }
+        if (refresh) updateUI()
+    }
     private var sensorUiScheduled = false
     private var studyMetadata = org.json.JSONObject()
     private var recordingGeneration = 0L
@@ -111,6 +116,7 @@ class WearCommunicationManager(
     private var diagnosticJob: Job? = null
     private var configJob: Job? = null
     private val configurationStore = WatchConfigurationStore(context)
+    private val thermalMonitor = WatchThermalMonitor(context)
     private var enabledSensors = DEFAULT_SENSOR_KEYS
     private val availableSensors = mutableSetOf<Int>()
     private val freshSensors = mutableSetOf<Int>()
@@ -146,6 +152,7 @@ class WearCommunicationManager(
     }
 
     fun close() {
+        thermalMonitor.close()
         pairing.cancel(); pairDialog?.dismiss(); pairDialog = null
         commandHandler.removeCallbacksAndMessages(null)
         HealthJournal.add(HealthCode.STOP_OK)
@@ -155,6 +162,7 @@ class WearCommunicationManager(
     }
 
     fun registerListeners() {
+        thermalMonitor.start()
         Log.d(TAG, "🔌 Registering listeners")
         Wearable.getDataClient(context).addListener(this)
         Wearable.getMessageClient(context).addListener(this)
@@ -366,6 +374,7 @@ class WearCommunicationManager(
                     reply.put("sensors", available)
                         .put("battery", battery?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1)
                         .put("lowMemory", memory.lowMemory).put("freeMb", memory.availMem / 1048576L)
+                        .put("thermalStatus", thermalMonitor.status)
                         .put("writes", combinedWriteStatus())
                     if (request.optBoolean("journalOnly")) {
                         reply.put("journalOnly", true)
@@ -579,14 +588,17 @@ class WearCommunicationManager(
     }
 
     private fun updateUI(prefix: String? = null) {
-        commandHandler.removeCallbacks(sensorUiRefresh)
-        sensorUiScheduled = false
+        val readings = synchronized(recordingLock) {
+            commandHandler.removeCallbacks(sensorUiRefresh)
+            sensorUiScheduled = false
+            Triple(hvalue, stepCount, lightLux)
+        }
         val personID = sharedPref.getString("personID", "unknown")
         val userProfession = sharedPref.getString("userProfession", "unknown")
         val userActivity = sharedPref.getString("userActivity", "Unlabeled activity")
         val fatigueLevel = sharedPref.getString("Fatigue Level", "0")
-        val heartRate = hvalue
-        val steps = stepCount.toInt()
+        val heartRate = readings.first
+        val steps = readings.second
 
         val displayText = buildString {
             if (prefix != null) appendLine(prefix)
@@ -596,7 +608,7 @@ class WearCommunicationManager(
             appendLine("\uD83E\uDD71 Fatigue Level: $fatigueLevel")
             appendLine("❤️ BPM: $heartRate")
             appendLine("👣 Steps: $steps")
-            appendLine("💡 Light: $lightLux")
+            appendLine("💡 Light: ${readings.third}")
         }
 
         binding.deviceconnectionStatusTv.post {
@@ -605,7 +617,7 @@ class WearCommunicationManager(
         }
     }
 
-    private fun setupSensors() {
+    private fun setupSensors(generation: Long) {
         sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
@@ -630,6 +642,11 @@ class WearCommunicationManager(
 
         val samplingPeriodUs = (samplingPeriodMs * 1000).toInt()
 
+        val thread = android.os.HandlerThread("PEMESA-sensors").apply { start() }
+        sensorThread = thread
+        val listener = createSensorListener(generation)
+        sensorListener = listener
+        val callbackHandler = android.os.Handler(thread.looper)
         availableSensors.clear()
         listOf("accelerometer" to accel, "gyroscope" to gyro, "gravity" to gravitySensor,
             "heart" to hrate, "light" to lightSensor, "pressure" to pressureSensor,
@@ -637,7 +654,7 @@ class WearCommunicationManager(
             .filter { it.first in enabledSensors }.forEach { (_, sensor) ->
             sensor?.let {
                 try {
-                    if (!sensorManager.registerListener(sensorListener, it, samplingPeriodUs)) {
+                    if (!sensorManager.registerListener(listener, it, samplingPeriodUs, callbackHandler)) {
                         HealthJournal.add(HealthCode.SENSOR_REGISTER_FAILED, it.type.toLong())
                         Log.w(TAG, "Sensor registration failed: ${it.type}")
                     } else availableSensors.add(it.type)
@@ -649,9 +666,12 @@ class WearCommunicationManager(
         }
     }
 
-    private val sensorListener = object : SensorEventListener {
+    private fun createSensorListener(generation: Long): SensorEventListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent?) {
             event?.let {
+                synchronized(recordingLock) {
+                if (!acquisitionCallbackAllowed(generation, recordingGeneration, stop, paused) ||
+                    it.sensor.type !in availableSensors) return
                 val required = when (it.sensor.type) {
                     Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE, Sensor.TYPE_GRAVITY,
                     Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_MAGNETIC_FIELD -> 3
@@ -665,8 +685,6 @@ class WearCommunicationManager(
                     }
                     return
                 }
-                synchronized(recordingLock) {
-                if (stop || paused || it.sensor.type !in availableSensors) return
                 freshSensors.add(it.sensor.type)
                 // Only event-driven measurements need this conversion; inertial samples use the timer timestamp.
                 when (it.sensor.type) {
@@ -808,18 +826,19 @@ class WearCommunicationManager(
             segmentStart = sessionElapsed; segmentSequence = 0L; segmentEnd = 0L
             lastInvalidNotice = 0L; lastReportedInvalid = false
             if (sessionId == null) sessionId = UUID.randomUUID().toString()
-            try {
-                setupSensors()
-            } catch (error: Exception) {
-                stop = true
-                if (::sensorManager.isInitialized) sensorManager.unregisterListener(sensorListener)
-                throw error
-            }
             sessionPersonId = sharedPref.getString("personID", "unknown") ?: "unknown"
             currentActivityLabel = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
             val personID = sessionPersonId
             val generation = ++recordingGeneration
             pendingSamples.clear()
+            try {
+                setupSensors(generation)
+            } catch (error: Exception) {
+                stop = true
+                recordingGeneration++
+                releaseSensorCallbacks()
+                throw error
+            }
 
             sensorTimer = fixedRateTimer("sensorTimer", true, 100, samplingPeriodMs) {
                 synchronized(recordingLock) {
@@ -877,12 +896,20 @@ class WearCommunicationManager(
             flushWearableLocked()
             commandHandler.removeCallbacks(sensorUiRefresh)
             sensorUiScheduled = false
+            lastStepCount = null
+            lastLightLux = -1f
         }
-        // Refresh or stop may arrive before the first recording starts.
-        if (::sensorManager.isInitialized) {
-            sensorManager.unregisterListener(sensorListener)
+        releaseSensorCallbacks()
+    }
+
+    private fun releaseSensorCallbacks() {
+        val listener = sensorListener
+        sensorListener = null
+        try {
+            if (listener != null && ::sensorManager.isInitialized) sensorManager.unregisterListener(listener)
+        } finally {
+            sensorThread?.quitSafely()
+            sensorThread = null
         }
-        lastStepCount = null
-        lastLightLux = -1f
     }
 }

@@ -64,58 +64,57 @@ data class Data(
         return "session_metadata,$tags $fields ${epochMillis ?: parseTimestampToMillis(timestamp)}"
     }
 
-    fun toLineProtocol(): String {
-        val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
-        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "") + (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "")
-        val safeLabel = escapeTag(label ?: "none")
+    private fun activityTags(): String = "person_id=" + escapeTag(person_id ?: "unknown") +
+        (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "") +
+        (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "") + ",label=" + escapeTag(label ?: "none")
 
-        val fields = mutableListOf<String>()
-
-        // Acceleration
-        acceX?.takeIf { it.isFinite() }?.let { fields.add("acceX=$it") }
-        acceY?.takeIf { it.isFinite() }?.let { fields.add("acceY=$it") }
-        acceZ?.takeIf { it.isFinite() }?.let { fields.add("acceZ=$it") }
-        gyroX?.takeIf { it.isFinite() }?.let { fields.add("gyroX=$it") }
-        gyroY?.takeIf { it.isFinite() }?.let { fields.add("gyroY=$it") }
-        gyroZ?.takeIf { it.isFinite() }?.let { fields.add("gyroZ=$it") }
-
-        // Gravity
-        gravityX?.takeIf { it.isFinite() }?.let { fields.add("gravityX=$it") }
-        gravityY?.takeIf { it.isFinite() }?.let { fields.add("gravityY=$it") }
-        gravityZ?.takeIf { it.isFinite() }?.let { fields.add("gravityZ=$it") }
-
-        // Linear acceleration
-        linAccX?.takeIf { it.isFinite() }?.let { fields.add("linAccX=$it") }
-        linAccY?.takeIf { it.isFinite() }?.let { fields.add("linAccY=$it") }
-        linAccZ?.takeIf { it.isFinite() }?.let { fields.add("linAccZ=$it") }
-
-        // Rotation vector
-        rotX?.takeIf { it.isFinite() }?.let { fields.add("rotX=$it") }
-        rotY?.takeIf { it.isFinite() }?.let { fields.add("rotY=$it") }
-        rotZ?.takeIf { it.isFinite() }?.let { fields.add("rotZ=$it") }
-        rotW?.takeIf { it.isFinite() }?.let { fields.add("rotW=$it") }
-
-        // Magnetic field in microteslas.
-        magX?.takeIf { it.isFinite() }?.let { fields.add("magX=$it") }
-        magY?.takeIf { it.isFinite() }?.let { fields.add("magY=$it") }
-        magZ?.takeIf { it.isFinite() }?.let { fields.add("magZ=$it") }
-
-        if (fields.isEmpty()) return ""
-        sequence?.let { fields.add("sequence=${it}i") }
-
-        return "inertial_data,person_id=$safePersonId,label=$safeLabel ${fields.joinToString(",")} $timestampMs"
+    private fun StringBuilder.appendInertial(tags: String, timestampMs: Long) {
+        val originalLength = length
+        if (isNotEmpty()) append('\n')
+        append("inertial_data,").append(tags).append(' ')
+        val fieldStart = length
+        fun field(name: String, value: Float?) {
+            if (value == null || !value.isFinite()) return
+            if (length > fieldStart) append(',')
+            append(name).append('=').append(value)
+        }
+        field("acceX", acceX); field("acceY", acceY); field("acceZ", acceZ)
+        field("gyroX", gyroX); field("gyroY", gyroY); field("gyroZ", gyroZ)
+        field("gravityX", gravityX); field("gravityY", gravityY); field("gravityZ", gravityZ)
+        field("linAccX", linAccX); field("linAccY", linAccY); field("linAccZ", linAccZ)
+        field("rotX", rotX); field("rotY", rotY); field("rotZ", rotZ); field("rotW", rotW)
+        field("magX", magX); field("magY", magY); field("magZ", magZ)
+        if (length == fieldStart) {
+            setLength(originalLength)
+            return
+        }
+        sequence?.let { append(",sequence=").append(it).append('i') }
+        append(' ').append(timestampMs)
     }
 
-    fun toLineProtocolActivity(): String {
+    private fun StringBuilder.appendActivity(tags: String, timestampMs: Long) {
+        if (isNotEmpty()) append('\n')
+        append("activity,").append(tags).append(" dummy=1")
+        sequence?.let { append(",sequence=").append(it).append('i') }
+        append(' ').append(timestampMs)
+    }
+
+    fun toLineProtocol(): String = buildString {
+        appendInertial(activityTags(), epochMillis ?: parseTimestampToMillis(timestamp))
+    }
+
+    fun toLineProtocolActivity(): String = buildString {
+        appendActivity(activityTags(), epochMillis ?: parseTimestampToMillis(timestamp))
+    }
+
+    /** The production writer shares tags and timestamp between both measurements. */
+    internal fun appendActivityBatchLines(output: StringBuilder) {
+        val tags = activityTags()
         val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
-        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "") + (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "")
-        val safeLabel = escapeTag(label ?: "none")
-
-        val fields = mutableListOf<String>()
-        if (fields.isEmpty()) fields.add("dummy=1")
-        sequence?.let { fields.add("sequence=${it}i") }
-
-        return "activity,person_id=$safePersonId,label=$safeLabel ${fields.joinToString(",")} $timestampMs"
+        with(output) {
+            appendInertial(tags, timestampMs)
+            appendActivity(tags, timestampMs)
+        }
     }
 
     fun toLineProtocolWearable(): String {

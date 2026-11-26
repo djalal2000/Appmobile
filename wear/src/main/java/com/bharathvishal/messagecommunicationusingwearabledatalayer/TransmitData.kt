@@ -130,8 +130,7 @@ class TransmissionService(private val debugLogs: Boolean = false, private val on
                             if (sample.sessionFields != null) {
                                 appendProtocolLine(sample.toSessionProtocol())
                             } else {
-                                appendProtocolLine(sample.toLineProtocol())
-                                appendProtocolLine(sample.toLineProtocolActivity())
+                                sample.appendActivityBatchLines(this)
                             }
                         }
                     }

@@ -14,7 +14,8 @@ internal enum class HealthCode(val level: String, val module: String) {
     WRITE_RECOVERED("INFO", "InfluxDB"), FAILURES_REPORTED("ERROR", "InfluxDB"),
     INTERNAL_ERROR("ERROR", "System"), DIAGNOSTIC_OK("INFO", "Diagnostics"),
     DIAGNOSTIC_FAILED("ERROR", "Diagnostics"), LOW_BATTERY("WARNING", "Battery"),
-    LOW_MEMORY("WARNING", "Memory"), RATE_LOW("WARNING", "Acquisition")
+    LOW_MEMORY("WARNING", "Memory"), RATE_LOW("WARNING", "Acquisition"),
+    THERMAL_HIGH("WARNING", "Thermal"), THERMAL_CRITICAL("CRITICAL", "Thermal"), THERMAL_RECOVERED("INFO", "Thermal")
 }
 
 internal data class HealthEvent(val time: Long, val code: HealthCode, val value: Long?, val count: Long = 1L)

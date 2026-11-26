@@ -24,12 +24,18 @@ internal fun validatedCommand(payload: String, running: Boolean): Map<String, St
 /** Only the caller's recording lock may access this buffer. */
 internal class SampleBatch<T>(private val capacity: Int) {
     init { require(capacity > 0) }
-    private val items = ArrayList<T>(capacity)
+    private var items = ArrayList<T>(capacity)
     val size: Int get() = items.size
     fun add(sample: T) { items.add(sample) }
     fun isFull(): Boolean = items.size >= capacity
     fun clear() = items.clear()
-    fun drain(): List<T> = items.toList().also { items.clear() }
+    // Transfer ownership to the writer; never copy or mutate a submitted batch.
+    fun drain(): List<T> {
+        if (items.isEmpty()) return emptyList()
+        val completed = items
+        items = ArrayList(capacity)
+        return completed
+    }
 }
 
 internal class CommandResults(private val capacity: Int = 128) {
@@ -102,3 +108,6 @@ internal class WearableBatch<T>(private val capacity: Int = 64) {
     }
     fun drain(): List<T> = if (batch.size == 0) emptyList() else batch.drain()
 }
+
+internal fun acquisitionCallbackAllowed(callbackGeneration: Long, activeGeneration: Long, stopped: Boolean, paused: Boolean): Boolean =
+    callbackGeneration == activeGeneration && !stopped && !paused
