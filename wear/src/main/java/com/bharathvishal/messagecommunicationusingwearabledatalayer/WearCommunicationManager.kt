@@ -211,12 +211,7 @@ class WearCommunicationManager(
         return try {
             handleMessagePayload(payload)
             // Confirm the resulting recording state and the applied metadata.
-            val stateMatches = when (action) {
-                "Start", "Resume" -> sensorTimer != null && !stop && !paused
-                "Pause" -> sensorTimer != null && paused
-                "Stop", "Refresh" -> sensorTimer == null && stop
-                else -> true
-            }
+            val stateMatches = recordingStateMatches(action, sensorTimer != null, stop, paused)
             val labelMatches = fields["Activity"]?.let { sharedPref.getString("userActivity", null) == it } ?: true
             val fatigueMatches = fatigue?.let { sharedPref.getString("Fatigue Level", null) == it } ?: true
             if (stateMatches && labelMatches && fatigueMatches) "OK" else "UNKNOWN"

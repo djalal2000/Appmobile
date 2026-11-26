@@ -50,3 +50,12 @@ internal fun retryDelayMs(code: Int, retryHeader: String?, attempt: Int): Long? 
     if (retryHeader != null && (seconds == null || seconds !in 0L..30L)) return null
     return maxOf(1000L, (seconds ?: 0L) * 1000L)
 }
+
+// Match the real watch timer and flags before reporting command execution.
+internal fun recordingStateMatches(action: String?, timerRunning: Boolean, stopped: Boolean, paused: Boolean): Boolean =
+    when (action) {
+        "Start", "Resume" -> timerRunning && !stopped && !paused
+        "Pause" -> timerRunning && paused
+        "Stop", "Refresh" -> !timerRunning && stopped
+        else -> true
+    }

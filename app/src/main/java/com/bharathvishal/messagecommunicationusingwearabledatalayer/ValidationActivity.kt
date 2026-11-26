@@ -227,7 +227,9 @@ class ValidationActivity : AppCompatActivity() {
     }
 
     // PEMESA_COMMAND_ACK_V1
-    private var commandPending = false
+    private val commandGate = RecordingCommandGate()
+    private val commandPending: Boolean get() = commandGate.busy
+    private var queuedStop: (() -> Unit)? = null
     private var commandUncertain = false
     private var confirmedFatigue = 0
 
@@ -249,10 +251,24 @@ class ValidationActivity : AppCompatActivity() {
 
     /** Apply the mobile state transition only after the watch confirms execution. */
     private fun confirmedCommand(message: String, onFailure: () -> Unit = {}, onConfirmed: () -> Unit) {
-        if (commandPending) {
-            commandNotice("Waiting for the watch", "Confirmation de la montre en cours")
-            onFailure()
-            return
+        when (commandGate.request(message)) {
+            RecordingCommandGate.Decision.QUEUE_STOP -> {
+                // Preserve the stop callback and run it before any new command.
+                queuedStop = { confirmedCommand(message, onFailure, onConfirmed) }
+                commandNotice("Stop requested. Waiting for the current command.",
+                    "Arrêt demandé. Attente de la commande en cours.")
+                return
+            }
+            RecordingCommandGate.Decision.STOP_ALREADY_REQUESTED -> {
+                commandNotice("Stop already requested", "Arrêt déjà demandé")
+                return
+            }
+            RecordingCommandGate.Decision.BUSY -> {
+                commandNotice("Waiting for the watch", "Confirmation de la montre en cours")
+                onFailure()
+                return
+            }
+            RecordingCommandGate.Decision.SEND -> Unit
         }
         if (commandUncertain && message != "Action: Stop" && message != "Action: Refresh") {
             commandNotice("Watch state unknown. Confirm Stop or Refresh first.", "État de la montre inconnu. Confirmez d’abord Stop ou Actualiser.")
@@ -260,14 +276,22 @@ class ValidationActivity : AppCompatActivity() {
             return
         }
         if (!wearableDeviceConnected) {
+            if (message == RecordingCommandGate.STOP) markCommandUncertain()
             commandNotice("Watch not connected", "Montre non connectée")
             onFailure()
             return
         }
-        commandPending = true
+        commandGate.begin(message)
+        // Permit a Stop request even while the Start acknowledgement is in flight.
+        if (message.contains("Action: Start")) {
+            binding.startRecordingButton.isEnabled = false
+            binding.stopRecordingButton.isEnabled = true
+            uiStyleButton(binding.stopRecordingButton, ContextCompat.getColor(this, android.R.color.holo_red_dark))
+        }
         lifecycleScope.launch {
             try {
-                when (communicator.sendConfirmedCommand(message)) {
+                val result = communicator.sendConfirmedCommand(message)
+                when (result) {
                     "OK" -> {
                         if (!wearableDeviceConnected) {
                             onFailure()
@@ -283,7 +307,7 @@ class ValidationActivity : AppCompatActivity() {
                     }
                     "REJECTED", "NO_CONNECTION" -> {
                         onFailure()
-                        if (message.contains("Action: Start") || message == "Action: Pause" || message == "Action: Resume") {
+                        if (commandNeedsRecovery(message, result)) {
                             markCommandUncertain()
                         }
                         commandNotice("Command rejected or watch unavailable. Check the watch.", "Commande refusée ou montre indisponible. Vérifiez la montre.")
@@ -295,7 +319,13 @@ class ValidationActivity : AppCompatActivity() {
                     }
                 }
             } finally {
-                commandPending = false
+                val stopNext = commandGate.finish()
+                val next = queuedStop
+                queuedStop = null
+                // Stay on the main thread: no ordinary command can take the next slot.
+                if (stopNext && lifecycle.currentState != androidx.lifecycle.Lifecycle.State.DESTROYED) {
+                    next?.invoke()
+                }
             }
         }
     }
