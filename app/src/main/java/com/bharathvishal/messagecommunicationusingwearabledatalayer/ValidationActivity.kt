@@ -583,14 +583,19 @@ class ValidationActivity : AppCompatActivity() {
             addState(intArrayOf(-android.R.attr.state_enabled), uiRounded(uiColor("#DCE5E8"), 14))
             addState(intArrayOf(), uiRounded(fill, 14))
         }
-        button.backgroundTintList = null
         button.background = android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(0x33FFFFFF), states,
             uiRounded(android.graphics.Color.WHITE, 14)
         )
+        button.backgroundTintList = null
+        (button as? androidx.appcompat.widget.AppCompatButton)?.supportBackgroundTintList = null
+        button.background?.setTintList(null)
+        // Use dark ink on the pastel Start button for readable contrast.
+        val enabledText = if (button === binding.startRecordingButton) uiColor("#173E59")
+            else android.graphics.Color.WHITE
         button.setTextColor(android.content.res.ColorStateList(
             arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
-            intArrayOf(uiColor("#526671"), android.graphics.Color.WHITE)
+            intArrayOf(uiColor("#526671"), enabledText)
         ))
         button.setAllCaps(false)
         button.minHeight = uiDp(52)
@@ -636,7 +641,7 @@ class ValidationActivity : AppCompatActivity() {
             itemIconTintList = android.content.res.ColorStateList.valueOf(uiColor("#36566B"))
             elevation = uiDp(4).toFloat()
         }
-        uiStyleButton(binding.startRecordingButton, uiColor("#096B69"))
+        uiStyleButton(binding.startRecordingButton, uiColor("#B9E0FA"))
         uiStyleButton(binding.pauseRecordingButton, uiColor("#76521E"))
         uiStyleButton(binding.stopRecordingButton, uiColor("#B32636"))
         listOf(binding.ActivityButton1, binding.ActivityButton2, binding.ActivityButton3,
