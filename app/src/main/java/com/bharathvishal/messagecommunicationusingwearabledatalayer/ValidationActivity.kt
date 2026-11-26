@@ -35,41 +35,41 @@ class ValidationActivity : AppCompatActivity() {
         val color: String
         when {
             status == null -> {
-                text = commandText("InfluxDB: status unavailable", "InfluxDB : état indisponible")
-                color = "#526671"
+                text = commandText("Status unavailable", "État indisponible")
+                color = "#D8E7E4"
             }
             status.activity == "ERROR" || status.wearable == "ERROR" -> {
                 val buckets = listOfNotNull(
                     "activity".takeIf { status.activity == "ERROR" },
                     "wearable".takeIf { status.wearable == "ERROR" }
                 ).joinToString(", ")
-                text = commandText("InfluxDB: write failed", "InfluxDB : échec d’écriture") + " ($buckets)"
-                color = "#B32636"
+                text = commandText("Write failed", "Échec d’écriture") + " ($buckets)"
+                color = "#FFB8C0"
             }
             status.failures > 0 -> {
-                text = commandText("InfluxDB: previous write failures", "InfluxDB : échecs antérieurs") +
+                text = commandText("Previous write failures", "Échecs antérieurs") +
                     " (${status.failures})"
-                color = "#865000"
+                color = "#FFD7A6"
             }
             status.activity == "OK" && status.wearable == "OK" -> {
-                text = commandText("InfluxDB: last writes OK", "InfluxDB : dernières écritures OK")
-                color = "#096B45"
+                text = commandText("Last writes OK", "Dernières écritures OK")
+                color = "#D6EDA5"
             }
             status.pending > 0 || status.activity == "OK" || status.wearable == "OK" -> {
-                text = commandText("InfluxDB: awaiting write confirmation", "InfluxDB : confirmation en attente")
-                color = "#865000"
+                text = commandText("Awaiting confirmation", "Confirmation en attente")
+                color = "#FFD7A6"
             }
             else -> {
-                text = commandText("InfluxDB: no writes yet", "InfluxDB : aucune écriture")
-                color = "#526671"
+                text = commandText("No writes yet", "Aucune écriture")
+                color = "#D8E7E4"
             }
         }
         val pending = status?.pending ?: 0L
         binding.influxStatusTv.text = if (pending > 0) {
-            "$text · " + commandText("$pending pending", "$pending en attente")
-        } else text
+            "● $text · " + commandText("$pending pending", "$pending en attente")
+        } else "● $text"
         binding.influxStatusTv.setTextColor(android.graphics.Color.parseColor(color))
-        binding.influxStatusTv.contentDescription = binding.influxStatusTv.text.toString() +
+        binding.influxStatusTv.contentDescription = "InfluxDB: " + binding.influxStatusTv.text.toString().removePrefix("● ") +
             if (status != null && status.failures > 0) {
                 commandText(". Failed writes since watch app launch: ${status.failures}",
                     ". Échecs depuis le lancement de la montre : ${status.failures}")
@@ -118,7 +118,8 @@ class ValidationActivity : AppCompatActivity() {
         showWatchBattery(null)
         showInfluxStatus(null)
 
-        binding.deviceconnectionStatusTv.text = localized("Connection status")
+        binding.deviceconnectionStatusTv.text = commandText("Watch status", "État de la montre")
+        binding.watchStatusSubtitleTv.text = commandText("Checking connection", "Vérification de la connexion")
         binding.startRecordingButton.text = localized("Start Recording")
         binding.stopRecordingButton.text = localized("Stop Recording")
         binding.pauseRecordingButton.text = localized("⏸ Pause")
@@ -429,6 +430,7 @@ class ValidationActivity : AppCompatActivity() {
                             val deviceNames = nodeList.joinToString("\n") { "• ${it.displayName} (${it.id})" }
                             AlertDialog.Builder(this@ValidationActivity)
                                 .setTitle(localized("Connected Watches"))
+                                .setIcon(R.drawable.ic_pemesa_round_watch)
                                 .setMessage(deviceNames)
                                 .setPositiveButton("OK", null)
                                 .create()
@@ -548,14 +550,17 @@ class ValidationActivity : AppCompatActivity() {
 
     private fun updateConnectionStatus(isConnected: Boolean, appOpen: Boolean) {
         when {
-            !isConnected -> uiStatusStyle("#FCE7E9", "#922B37")
-            appOpen -> uiStatusStyle("#D6EDA5", "#344C16")
-            else -> uiStatusStyle("#FBEBD5", "#744917")
+            !isConnected -> uiStatusStyle("#402B30", "#54383E", "#FFB8C0")
+            appOpen -> uiStatusStyle("#1E3935", "#2D4843", "#D6EDA5")
+            else -> uiStatusStyle("#3E3427", "#514335", "#FFD7A6")
         }
-        binding.deviceconnectionStatusTv.text = when {
-            !isConnected -> localized("❌ Watch not connected.")
-            appOpen -> localized("✅ Watch connected and app open.").replace("✅", "✓")
-            else -> localized("⚠️ Watch connected but app closed.")
+        binding.deviceconnectionStatusTv.text = if (isConnected)
+            commandText("Watch connected", "Montre connectée")
+        else commandText("Watch disconnected", "Montre déconnectée")
+        binding.watchStatusSubtitleTv.text = when {
+            !isConnected -> commandText("Connection unavailable", "Connexion indisponible")
+            appOpen -> commandText("Application running", "Application ouverte")
+            else -> commandText("Application closed", "Application fermée")
         }
     }
 
@@ -639,23 +644,24 @@ class ValidationActivity : AppCompatActivity() {
         }
     }
 
-    private fun uiStatusStyle(fill: String, ink: String) {
-        // Apply the connection state to the shared connection-and-battery surface.
+    private fun uiStatusStyle(fill: String, inner: String, accent: String) {
         binding.watchStatusContainer.apply {
-            background = uiRounded(uiColor(fill), 18)
-            setPadding(uiDp(12), uiDp(9), uiDp(12), uiDp(9))
+            background = uiRounded(uiColor(fill), 20)
+            setPadding(uiDp(12), uiDp(10), uiDp(12), uiDp(10))
         }
-        binding.deviceconnectionStatusTv.apply {
-            background = null
-            setPadding(0, 0, 0, 0)
-            setTextColor(uiColor(ink))
+        binding.watchStatusIcon.background = uiRounded(uiColor(accent), 50)
+        binding.deviceconnectionStatusTv.setTextColor(android.graphics.Color.WHITE)
+        binding.watchStatusSubtitleTv.setTextColor(uiColor("#D8E7E4"))
+        binding.watchBatteryTv.setTextColor(android.graphics.Color.WHITE)
+        binding.influxStatusContainer.apply {
+            background = uiRounded(uiColor(inner), 12)
+            setPadding(uiDp(8), uiDp(6), uiDp(8), uiDp(6))
         }
-        binding.watchBatteryTv.setTextColor(uiColor(ink))
     }
 
     private fun applyUiDesign() {
         binding.root.setBackgroundColor(uiColor("#F1F6F7"))
-        uiStatusStyle("#E4EDF0", "#294958")
+        uiStatusStyle("#26383B", "#38494C", "#D8E7E4")
         binding.timerTextView.apply {
             background = uiRounded(uiColor("#FFFFFF"), 20, uiColor("#D6E3E6"))
             setTextColor(uiColor("#142D3A"))
@@ -672,7 +678,14 @@ class ValidationActivity : AppCompatActivity() {
         updateFatigueColor(binding.TirednessSeekBar.progress)
         binding.bottomNavigationView.apply {
             setBackgroundColor(uiColor("#FFFFFF"))
-            itemIconTintList = android.content.res.ColorStateList.valueOf(uiColor("#36566B"))
+            // Preserve the multicolor watch vector; keep the existing tint on other icons.
+            itemIconTintList = null
+            listOf(R.id.action_home, R.id.action_refresh_connection).forEach { id ->
+                val item = menu.findItem(id)
+                val drawable = item.icon?.mutate()
+                drawable?.setTint(uiColor("#36566B"))
+                item.icon = drawable
+            }
             elevation = uiDp(4).toFloat()
         }
         uiStyleButton(binding.startRecordingButton, uiColor("#B9E0FA"))

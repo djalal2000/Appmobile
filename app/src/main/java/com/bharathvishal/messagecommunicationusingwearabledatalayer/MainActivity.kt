@@ -267,6 +267,7 @@ class MainActivity : ComponentActivity() {
 
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle(tr("Connected Watches"))
+                    .setIcon(R.drawable.ic_pemesa_round_watch)
                     .setMessage(deviceNames)
                     .setPositiveButton("OK", null)
                     .create()
@@ -585,7 +586,8 @@ fun SimpleTopAppBar(onMenuItemClick: (String) -> Unit, language: String = AppLan
                             expanded = false
                         },
                         leadingIcon = {
-                            Icon(Icons.Filled.Watch, contentDescription = tr("Smartwatch"))
+                            Icon(painter = painterResource(R.drawable.ic_pemesa_round_watch), contentDescription = tr("Smartwatch"),
+                                modifier = Modifier.size(24.dp), tint = Color.Unspecified)
                         }
                     )
                     DropdownMenuItem(
