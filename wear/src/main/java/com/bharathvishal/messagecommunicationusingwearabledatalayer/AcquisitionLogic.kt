@@ -43,12 +43,36 @@ internal class CommandResults(private val capacity: Int = 128) {
     }
 }
 
-/** Null means no further retry; delay is in milliseconds. */
-internal fun retryDelayMs(code: Int, retryHeader: String?, attempt: Int): Long? {
-    if (attempt != 0 || (code != 408 && code != 429 && code !in 500..599)) return null
-    val seconds = retryHeader?.toLongOrNull()
-    if (retryHeader != null && (seconds == null || seconds !in 0L..30L)) return null
-    return maxOf(1000L, (seconds ?: 0L) * 1000L)
+/** Bound recovery time for each in-flight batch, without storing measurements on disk. */
+internal const val WRITE_RETRY_BUDGET_MS = 300_000L
+
+internal fun recoveryDelayMs(attempt: Int, remainingMs: Long, retryAfterMs: Long = 0L): Long? {
+    if (attempt < 0 || remainingMs <= 0 || retryAfterMs < 0) return null
+    val backoff = minOf(30_000L, 1000L shl attempt.coerceAtMost(5))
+    val delay = maxOf(backoff, retryAfterMs)
+    return delay.takeIf { it < remainingMs }
+}
+
+internal fun retryDelayMs(code: Int, retryHeader: String?, attempt: Int,
+                          remainingMs: Long = WRITE_RETRY_BUDGET_MS,
+                          nowMs: Long = System.currentTimeMillis()): Long? {
+    if (code != 408 && code != 429 && code !in 500..599) return null
+    val header = retryHeader?.trim()?.takeIf { it.isNotEmpty() }
+    val afterMs = if (header == null) 0L else {
+        val seconds = header.toLongOrNull()
+        if (seconds != null) {
+            if (seconds < 0 || seconds > Long.MAX_VALUE / 1000) return null
+            seconds * 1000
+        } else {
+            val format = java.text.SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", java.util.Locale.US)
+            format.isLenient = false
+            val position = java.text.ParsePosition(0)
+            val date = format.parse(header, position)
+            if (date == null || position.index != header.length) return null
+            (date.time - nowMs).coerceAtLeast(0L)
+        }
+    }
+    return recoveryDelayMs(attempt, remainingMs, afterMs)
 }
 
 // Match the real watch timer and flags before reporting command execution.

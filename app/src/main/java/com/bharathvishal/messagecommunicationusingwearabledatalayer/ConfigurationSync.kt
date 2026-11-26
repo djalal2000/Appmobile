@@ -74,6 +74,43 @@ internal object ConfigurationSync {
             }
         }
 
+    /** Compare the locally saved revision with the watch's verified revision, without transferring settings. */
+    suspend fun inspectLocal(context: Context): PhoneConfigurationView = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val prefs = CollectionPreferences(context)
+            val snapshot = runCatching { prefs.configuration() }.getOrNull()
+            val registry = WatchRegistry(context)
+            val node = registry.target
+            val watch = registry.list().firstOrNull { it.node == node }
+            val payload = snapshot?.let { JSONObject(it.payload) }
+            val server = payload?.optJSONObject("server")
+            val array = payload?.optJSONArray("sensors")
+            val sensors = array?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: prefs.sensors
+            val local = PhoneConfigurationView(
+                watchName = watch?.name ?: "", version = snapshot?.version ?: "",
+                hz = payload?.getInt("hz") ?: prefs.hz, interval = payload?.getInt("interval") ?: prefs.interval,
+                sensors = sensors, custom = payload?.has("server") ?: prefs.custom,
+                url = server?.optString("url") ?: prefs.url, org = server?.optString("org") ?: prefs.organization,
+                activity = server?.optString("activity") ?: prefs.activity,
+                wearable = server?.optString("wearable") ?: prefs.wearable,
+                tokenConfigured = if (prefs.custom) prefs.hasToken else true
+            )
+            if (snapshot == null) return@withLock local.copy(result = "ERROR")
+            if (node == null || watch == null) return@withLock local.copy(result = "NO_WATCH")
+            val reply = exchange(context, node, watch.id, JSONObject().put("action", "status"))
+                ?: return@withLock local.copy(result = "OFFLINE")
+            if (registry.target != node || prefs.version() != snapshot.version)
+                return@withLock local.copy(result = "CHANGED")
+            val result = when {
+                reply.optString("result") == "BUSY" -> "BUSY"
+                reply.optString("result") != "OK" -> "ERROR"
+                configMatches(snapshot.version, snapshot.hash, reply.optString("version"), reply.optString("hash")) -> "CONFIRMED"
+                else -> "DIFFERENT"
+            }
+            local.copy(result = result, checkedAt = System.currentTimeMillis())
+        }
+    }
+
     fun message(result: ConfigSyncResult, french: Boolean): String = when (result) {
         ConfigSyncResult.CONFIRMED -> if (french) "Enregistré et confirmé par la montre." else "Saved and confirmed by the watch."
         ConfigSyncResult.OFFLINE -> if (french) "Enregistré sur le téléphone. Synchronisation en attente de la montre." else "Saved on phone. Waiting for the watch."

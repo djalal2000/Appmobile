@@ -92,12 +92,16 @@ class AcquisitionLogicTest {
     @Test fun httpRetryOnlyForTransientErrorsAndHonorsDelay() {
         for (code in listOf(408, 429, 500, 502, 503, 599)) {
             assertEquals(1000L, retryDelayMs(code, null, 0))
-            assertNull(retryDelayMs(code, null, 1))
+            assertEquals(2000L, retryDelayMs(code, null, 1))
+            assertEquals(30000L, retryDelayMs(code, null, 8))
+            assertNull(retryDelayMs(code, null, 8, 30000L))
         }
         for (code in listOf(204, 400, 401, 403, 404, 422)) assertNull(retryDelayMs(code, null, 0))
         assertEquals(5000L, retryDelayMs(429, "5", 0))
         assertEquals(30000L, retryDelayMs(503, "30", 0))
-        for (header in listOf("-1", "31", "unknown", "999999999999999999999999")) {
+        assertEquals(31000L, retryDelayMs(429, "31", 0))
+        assertNull(retryDelayMs(429, "301", 0))
+        for (header in listOf("-1", "unknown", "999999999999999999999999")) {
             assertNull(retryDelayMs(429, header, 0))
         }
     }

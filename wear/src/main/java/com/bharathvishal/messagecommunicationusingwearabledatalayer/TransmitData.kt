@@ -10,6 +10,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import java.io.IOException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -239,12 +240,26 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             if (lineProtocol.isBlank()) return
             // A retry must preserve the original payload and timestamps.
             val requestBody = lineProtocol.toRequestBody("text/plain".toMediaType())
-            // Do not log participant data or credentials.
-            for (attempt in 0..1) {
+            // Reuse the exact request and destination throughout recovery.
+            val service = influxService
+            val organization = destination.organization
+            val deadline = android.os.SystemClock.elapsedRealtime() + WRITE_RETRY_BUDGET_MS
+            var attempt = 0
+            fun remaining(): Long = deadline - android.os.SystemClock.elapsedRealtime()
+            fun markRetry(code: Long? = null) {
+                synchronized(writeLock) { stats.last = "ERROR" }
+                HealthJournal.add(HealthCode.WRITE_RETRY, code)
+            }
+            while (remaining() > 0) {
                 try {
-                    val response = influxService.sendLineProtocol(
-                        org = destination.organization, bucket = bucket, precision = "ms", body = requestBody
-                    )
+                    val response = withTimeoutOrNull(remaining().coerceAtLeast(1L)) {
+                        service.sendLineProtocol(org = organization, bucket = bucket, precision = "ms", body = requestBody)
+                    }
+                    if (response == null) {
+                        accepted = false
+                        HealthJournal.add(HealthCode.WRITE_FAILED)
+                        return
+                    }
                     val code = response.code()
                     val successful = response.isSuccessful
                     val retryHeader = response.headers()["Retry-After"]
@@ -256,20 +271,27 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                         if (debugLogs) Log.d(logTag, "Write accepted by InfluxDB.")
                         return
                     }
-                    val retryDelay = retryDelayMs(code, retryHeader, attempt)
-                    if (retryDelay != null) {
-                        HealthJournal.add(HealthCode.WRITE_RETRY, code.toLong())
-                        delay(retryDelay)
-                    } else {
+                    val retryDelay = retryDelayMs(code, retryHeader, attempt, remaining())
+                    if (retryDelay == null) {
                         accepted = false
                         HealthJournal.add(HealthCode.WRITE_HTTP, code.toLong())
-                        Log.e(logTag, "InfluxDB write rejected: $code")
+                        Log.e(logTag, "InfluxDB write rejected or retry budget exhausted: $code")
                         return
                     }
+                    markRetry(code.toLong())
+                    delay(retryDelay)
                 } catch (error: IOException) {
-                    if (attempt == 0) { HealthJournal.add(HealthCode.WRITE_RETRY); delay(1000L) } else throw error
+                    // Certificate failures are not transient network outages.
+                    if (error is javax.net.ssl.SSLHandshakeException ||
+                        error is javax.net.ssl.SSLPeerUnverifiedException) throw error
+                    val retryDelay = recoveryDelayMs(attempt, remaining()) ?: throw error
+                    markRetry()
+                    delay(retryDelay)
                 }
+                attempt++
             }
+            accepted = false
+            HealthJournal.add(HealthCode.WRITE_FAILED)
         } catch (cancelled: CancellationException) {
             accepted = false
             throw cancelled
