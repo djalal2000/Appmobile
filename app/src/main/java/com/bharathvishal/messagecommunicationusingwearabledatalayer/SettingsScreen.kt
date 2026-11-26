@@ -68,7 +68,14 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
     var resetTarget by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun goBack() {
-        if (selectedCode != null) selectedCode = null else onBack()
+        val current = selectedCode
+        editingIndex = null
+        resetTarget = null
+        when {
+            current == null -> onBack()
+            professions.any { it.substringBefore(" - ") == current } -> selectedCode = "professions"
+            else -> selectedCode = null
+        }
     }
     BackHandler(onBack = ::goBack)
     val code = selectedCode
@@ -76,6 +83,7 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
         null -> tr("Settings")
         "server" -> "InfluxDB"
         "sensors" -> ui("Sensors", "Capteurs")
+        "professions" -> ui("Professions & activities", "Métiers et activités")
         else -> name(code)
     }
 
@@ -120,7 +128,14 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                         icon = Icons.Filled.Storage, onClick = { selectedCode = "server" })
                     SettingsRow(title = ui("Sensors", "Capteurs"), subtitle = ui("Choose signals to collect", "Choisir les signaux à collecter"),
                         icon = Icons.Filled.Tune, onClick = { selectedCode = "sensors" })
-                    SectionHeading(ui("Professions & activities", "Métiers et activités"))
+                    SectionHeading(ui("Customization", "Personnalisation"))
+                    SettingsRow(
+                        title = ui("Professions & activities", "Métiers et activités"),
+                        subtitle = ui("3 professions · Manage names and activity labels", "3 métiers · Gérer les noms et les étiquettes"),
+                        icon = Icons.Filled.Folder, onClick = { selectedCode = "professions" }
+                    )
+                } else if (code == "professions") {
+                    SectionHeading(ui("Choose a profession", "Choisir un métier"))
                     professions.forEach { option ->
                         val itemCode = option.substringBefore(" - ")
                         SettingsRow(
@@ -180,7 +195,8 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
     }
 
     val index = editingIndex
-    if (code != null && index != null) {
+    val isProfession = code != null && professions.any { it.substringBefore(" - ") == code }
+    if (code != null && isProfession && index != null) {
         val otherNames = if (index == -1) {
             professions.map { it.substringBefore(" - ") }.filter { it != code }.map { name(it) }
         } else {
@@ -231,7 +247,7 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
     }
 
     val target = resetTarget
-    if (code != null && target != null) {
+    if (code != null && isProfession && target != null) {
         AlertDialog(
             onDismissRequest = { resetTarget = null },
             title = { Text(if (target == "name") ui("Restore default name", "Rétablir le nom par défaut") else tr("Restore default labels")) },
