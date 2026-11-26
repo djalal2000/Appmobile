@@ -33,33 +33,34 @@ class ValidationActivity : AppCompatActivity() {
         batteryUiHandler.removeCallbacks(influxExpiry)
         val text: String
         val color: String
-        when {
-            status == null -> {
+        when (influxDisplayState(status)) {
+            InfluxDisplayState.UNAVAILABLE -> {
                 text = commandText("Status unavailable", "État indisponible")
                 color = "#D8E7E4"
             }
-            status.activity == "ERROR" || status.wearable == "ERROR" -> {
+            InfluxDisplayState.FAILED -> {
+                val failed = requireNotNull(status)
                 val buckets = listOfNotNull(
-                    "activity".takeIf { status.activity == "ERROR" },
-                    "wearable".takeIf { status.wearable == "ERROR" }
+                    "activity".takeIf { failed.activity == "ERROR" },
+                    "wearable".takeIf { failed.wearable == "ERROR" }
                 ).joinToString(", ")
                 text = commandText("Write failed", "Échec d’écriture") + " ($buckets)"
                 color = "#FFB8C0"
             }
-            status.failures > 0 -> {
+            InfluxDisplayState.PREVIOUS_FAILURES -> {
                 text = commandText("Previous write failures", "Échecs antérieurs") +
-                    " (${status.failures})"
+                    " (${requireNotNull(status).failures})"
                 color = "#FFD7A6"
             }
-            status.activity == "OK" && status.wearable == "OK" -> {
+            InfluxDisplayState.OK -> {
                 text = commandText("Last writes OK", "Dernières écritures OK")
                 color = "#D6EDA5"
             }
-            status.pending > 0 || status.activity == "OK" || status.wearable == "OK" -> {
+            InfluxDisplayState.PENDING -> {
                 text = commandText("Awaiting confirmation", "Confirmation en attente")
                 color = "#FFD7A6"
             }
-            else -> {
+            InfluxDisplayState.NO_WRITES -> {
                 text = commandText("No writes yet", "Aucune écriture")
                 color = "#D8E7E4"
             }

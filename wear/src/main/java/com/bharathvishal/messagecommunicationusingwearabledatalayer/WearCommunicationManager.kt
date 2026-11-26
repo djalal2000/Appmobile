@@ -90,7 +90,7 @@ class WearCommunicationManager(
     private var sensorTimer: Timer? = null
     private val recordingLock = Any()
     private val bufferSize = (SEND_INTERVAL_MS / SAMPLING_PERIOD_MS).toInt()
-    private val pendingSamples = ArrayList<Data>(bufferSize)
+    private val pendingSamples = SampleBatch<Data>(bufferSize)
     private var recordingGeneration = 0L
 
     private val transmit = TransmissionService(
@@ -183,9 +183,7 @@ class WearCommunicationManager(
     private val commandAckPath = "/pemesa/command-ack-v1"
     private val commandHandler = android.os.Handler(android.os.Looper.getMainLooper())
     // Keep only recent command results in memory; never persist them to disk.
-    private val completedCommands = object : LinkedHashMap<String, String>() {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
-    }
+    private val completedCommands = CommandResults()
 
     private fun receiveConfirmedCommand(node: String, message: String) {
         // Execute control commands serially on the main thread, as with the existing listener.
@@ -196,9 +194,8 @@ class WearCommunicationManager(
             }
             val id = envelope.optString("id")
             if (id.length != 36 || runCatching { java.util.UUID.fromString(id) }.isFailure) return@post
-            val key = "$node:$id"
-            val result = completedCommands[key] ?: executeConfirmedCommand(envelope.optString("payload")).also {
-                completedCommands[key] = it
+            val result = completedCommands.result(node, id) {
+                executeConfirmedCommand(envelope.optString("payload"))
             }
             val reply = org.json.JSONObject().put("id", id).put("result", result)
             Wearable.getMessageClient(context)
@@ -208,23 +205,9 @@ class WearCommunicationManager(
     }
 
     private fun executeConfirmedCommand(payload: String): String {
-        val pairs = payload.split(',').map { it.split(':', limit = 2).map(String::trim) }
-        if (pairs.any { it.size != 2 || it[0].isEmpty() || it[1].isEmpty() }) return "REJECTED"
-        val fields = pairs.associate { it[0] to it[1] }
-        if (fields.size != pairs.size || fields.keys.any { it !in setOf("ID", "Profession", "Activity", "FatigueLevel", "Action") }) return "REJECTED"
-        if (fields.values.any { ':' in it }) return "REJECTED"
+        val fields = validatedCommand(payload, sensorTimer != null) ?: return "REJECTED"
         val action = fields["Action"]
         val fatigue = fields["FatigueLevel"]
-        if (fatigue != null && fatigue.toIntOrNull()?.let { it in 0..5 } != true) return "REJECTED"
-        val running = sensorTimer != null
-        when (action) {
-            "Start" -> if (running || listOf("ID", "Profession", "Activity", "FatigueLevel").any { it !in fields }) return "REJECTED"
-            "Pause", "Resume" -> if (!running) return "REJECTED"
-            "Stop", "Refresh" -> Unit
-            null -> if (fields.keys.any { it !in setOf("Activity", "FatigueLevel") } ||
-                ("Activity" in fields && !running)) return "REJECTED"
-            else -> return "REJECTED"
-        }
         return try {
             handleMessagePayload(payload)
             // Confirm the resulting recording state and the applied metadata.
@@ -546,7 +529,7 @@ class WearCommunicationManager(
                             pressure = pressureHpa
                         )
                         pendingSamples.add(data)
-                        if (pendingSamples.size >= bufferSize) {
+                        if (pendingSamples.isFull()) {
                             submitPendingSamples()
                         }
                     }
@@ -557,9 +540,8 @@ class WearCommunicationManager(
 
     // Called under recordingLock; the submitted list is independent of subsequent samples.
     private fun submitPendingSamples() {
-        if (pendingSamples.isEmpty()) return
-        transmit.transmitData(pendingSamples.toList())
-        pendingSamples.clear()
+        if (pendingSamples.size == 0) return
+        transmit.transmitData(pendingSamples.drain())
     }
 
     private fun stopRecording() {

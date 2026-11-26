@@ -64,9 +64,7 @@ class WearableCommunicator(
                 reply.getString("activity"), reply.getString("wearable"),
                 reply.getLong("pending"), reply.getLong("failures")
             )
-            val states = setOf("NONE", "OK", "ERROR")
-            if (status.activity in states && status.wearable in states &&
-                status.pending >= 0 && status.failures >= 0) {
+            if (validInfluxStatus(status)) {
                 onInfluxStatus?.invoke(status)
             }
         } catch (error: Exception) {
@@ -189,9 +187,8 @@ class WearableCommunicator(
         try {
             val ack = org.json.JSONObject(message)
             val pending = pendingCommands[ack.getString("id")] ?: return
-            if (pending.nodeId != event.sourceNodeId) return
             val result = ack.getString("result")
-            if (result in setOf("OK", "REJECTED", "UNKNOWN")) pending.result.complete(result)
+            if (validCommandAck(pending.nodeId, event.sourceNodeId, result)) pending.result.complete(result)
         } catch (error: Exception) {
             Log.w("WearableComm", "Invalid command acknowledgement", error)
         }

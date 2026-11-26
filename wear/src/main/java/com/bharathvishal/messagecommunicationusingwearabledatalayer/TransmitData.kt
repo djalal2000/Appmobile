@@ -160,7 +160,6 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                     val code = response.code()
                     val successful = response.isSuccessful
                     val retryHeader = response.headers()["Retry-After"]
-                    val retrySeconds = retryHeader?.toLongOrNull()
                     response.body()?.close()
                     response.errorBody()?.close()
                     Log.d(logTag, "Response code: $code")
@@ -170,10 +169,9 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                         Log.d(logTag, "Write accepted by InfluxDB.")
                         return
                     }
-                    val transient = code == 408 || code == 429 || code in 500..599
-                    if (attempt == 0 && transient &&
-                        (retryHeader == null || retrySeconds != null && retrySeconds in 0L..30L)) {
-                        delay(maxOf(1000L, (retrySeconds ?: 0L) * 1000L))
+                    val retryDelay = retryDelayMs(code, retryHeader, attempt)
+                    if (retryDelay != null) {
+                        delay(retryDelay)
                     } else {
                         accepted = false
                         Log.e(logTag, "InfluxDB write rejected: $code")
