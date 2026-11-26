@@ -7,13 +7,6 @@ import android.util.Log
 import android.view.WindowManager
 import android.widget.SeekBar
 import android.widget.Button
-import android.widget.EditText
-import android.widget.ImageButton
-import android.widget.LinearLayout
-import android.view.Gravity
-import android.view.ViewGroup
-import android.text.InputType
-import android.util.TypedValue
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -54,13 +47,13 @@ class ValidationActivity : AppCompatActivity() {
     private var selectedId: String = ""
     private var selectedprofession: String = ""
     private var selectedActivity: String = "Unlabeled activity"
-    private var vraiActivity: String = ""
+    private var hasSelectedActivity = false
     // Persist custom activity labels by profession, independently of the display language.
     private val unlabeledIndex = 6
     private lateinit var defaultActivityLabels: List<String>
     private val customActivityLabels = MutableList<String?>(7) { null }
     private val activityLabelPreferences by lazy {
-        getSharedPreferences("activity_labels", MODE_PRIVATE)
+        getSharedPreferences(ActivityLabels.PREFERENCES, MODE_PRIVATE)
     }
     private var isRecording: Boolean = false
     private var isPaused: Boolean = false
@@ -86,7 +79,6 @@ class ValidationActivity : AppCompatActivity() {
 
         selectedId = intent.getStringExtra("id") ?: "Unknown"
         selectedprofession = intent.getStringExtra("profession") ?: "Unknown"
-        vraiActivity = intent.getStringExtra("Activity") ?: "lifting a patient"
         initializeActivityLabels()
 
         communicator = WearableCommunicator(
@@ -247,6 +239,7 @@ class ValidationActivity : AppCompatActivity() {
         binding.TirednessSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 binding.TirednessValueTextView.text = localized("Fatigue Level:") + " " + progress
+                updateFatigueColor(progress)
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
@@ -271,7 +264,9 @@ class ValidationActivity : AppCompatActivity() {
 
         isRecording = false
         isPaused = false
+        hasSelectedActivity = false
         binding.toggleActivityButton.isEnabled = false
+        updateActivityButtonColor()
 
         stopTimer()
 
@@ -310,6 +305,7 @@ class ValidationActivity : AppCompatActivity() {
                 val requestedActivity = activityLabel(unlabeledIndex)
                 confirmedCommand("Activity: $requestedActivity") {
                     selectedActivity = requestedActivity
+                    hasSelectedActivity = true
                     updateUnlabeledButton("🛑")
                     updateActivityButtonColor()
                     updateActivityStatusText()
@@ -404,13 +400,13 @@ class ValidationActivity : AppCompatActivity() {
     private fun setupActivityButtons() {
         activityButtons().forEachIndexed { index, button ->
             button.text = activityDisplay(index)
-            installLabelEditor(button, index)
 
             button.setOnClickListener {
                 if (isRecording) {
                     val requestedActivity = activityLabel(index)
                     confirmedCommand("Activity: $requestedActivity") {
                         selectedActivity = requestedActivity
+                        hasSelectedActivity = true
                         updateActivityButtonColor()
                         updateActivityStatusText()
                     }
@@ -420,7 +416,6 @@ class ValidationActivity : AppCompatActivity() {
             }
         }
         updateUnlabeledButton("🚫")
-        installLabelEditor(binding.toggleActivityButton, unlabeledIndex)
     }
 
     private fun activityButtons() = listOf(
@@ -428,13 +423,14 @@ class ValidationActivity : AppCompatActivity() {
         binding.ActivityButton4, binding.ActivityButton5, binding.ActivityButton6
     )
 
-    private fun labelKey(index: Int) = "$selectedprofession:$index"
+    private fun labelKey(index: Int) = ActivityLabels.key(selectedprofession, index)
 
     private fun initializeActivityLabels() {
         val fromIntent = intent.getStringArrayExtra("Activities")
+        val defaults = ActivityLabels.defaults(selectedprofession)
         defaultActivityLabels = List(6) { index ->
-            fromIntent?.getOrNull(index) ?: "Activity ${index + 1}"
-        } + "Unlabeled activity"
+            fromIntent?.getOrNull(index) ?: defaults[index]
+        } + defaults[unlabeledIndex]
         customActivityLabels.indices.forEach { index ->
             customActivityLabels[index] = activityLabelPreferences.getString(labelKey(index), null)
         }
@@ -454,101 +450,6 @@ class ValidationActivity : AppCompatActivity() {
 
     private fun updateUnlabeledButton(prefix: String) {
         binding.toggleActivityButton.text = "$prefix ${activityDisplay(unlabeledIndex)}"
-    }
-
-    private fun labelUiText(english: String, french: String): String = if (AppLanguage.get(this) == AppLanguage.FRENCH) french else english
-
-    private fun labelDp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
-
-    // Retain the activity button ID, click listener, and layout parameters.
-    // Keep the label editor accessible when activity selection is disabled.
-    private fun installLabelEditor(button: Button, index: Int) {
-        val parent = button.parent as LinearLayout
-        val position = parent.indexOfChild(button)
-        val originalParams = button.layoutParams as LinearLayout.LayoutParams
-        parent.removeViewAt(position)
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        parent.addView(row, position, originalParams)
-        row.addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val pencil = ImageButton(this).apply {
-            setImageResource(android.R.drawable.ic_menu_edit)
-            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-            val padding = labelDp(12)
-            setPadding(padding, padding, padding, padding)
-            val backgroundValue = TypedValue()
-            if (theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, backgroundValue, true)) {
-                setBackgroundResource(backgroundValue.resourceId)
-            }
-            contentDescription = labelUiText("Rename label", "Renommer l’étiquette") + ": " + activityDisplay(index)
-        }
-        row.addView(pencil, LinearLayout.LayoutParams(labelDp(48), labelDp(48)))
-        pencil.setOnClickListener { showLabelEditor(index, pencil) }
-    }
-
-    private fun showLabelEditor(index: Int, pencil: ImageButton) {
-        val currentDisplay = activityDisplay(index)
-        val input = EditText(this).apply {
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setText(currentDisplay)
-            selectAll()
-        }
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(labelDp(24), labelDp(8), labelDp(24), 0)
-            addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(labelUiText("Rename label", "Renommer l’étiquette"))
-            .setView(container)
-            .setNegativeButton(labelUiText("Cancel", "Annuler"), null)
-            .setPositiveButton(labelUiText("Save", "Enregistrer"), null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val newLabel = input.text.toString().trim()
-                when {
-                    newLabel == currentDisplay -> dialog.dismiss()
-                    newLabel.isEmpty() -> input.error = labelUiText("Enter a label", "Saisissez une étiquette")
-                    newLabel.any { it == ',' || it == ':' || it == '\n' || it == '\r' } ->
-                        input.error = labelUiText("Do not use commas or colons", "N’utilisez ni virgule ni deux-points")
-                    defaultActivityLabels.indices.any { it != index && (activityLabel(it) == newLabel || activityDisplay(it) == newLabel) } ->
-                        input.error = labelUiText("This label already exists", "Cette étiquette existe déjà")
-                    else -> {
-                        saveActivityLabel(index, newLabel)
-                        pencil.contentDescription = labelUiText("Rename label", "Renommer l’étiquette") + ": " + activityDisplay(index)
-                        dialog.dismiss()
-                    }
-                }
-            }
-        }
-        input.requestFocus()
-        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-        dialog.show()
-    }
-
-    private fun saveActivityLabel(index: Int, newLabel: String, confirmed: Boolean = false) {
-        val wasSelected = selectedActivity == activityLabel(index)
-        if (wasSelected && (isRecording || commandUncertain) && !confirmed) {
-            confirmedCommand("Activity: $newLabel") { saveActivityLabel(index, newLabel, true) }
-            return
-        }
-        customActivityLabels[index] = newLabel
-        activityLabelPreferences.edit().putString(labelKey(index), newLabel).apply()
-        if (index == unlabeledIndex) {
-            val prefix = if (binding.toggleActivityButton.text.startsWith("🛑")) "🛑" else "🚫"
-            updateUnlabeledButton(prefix)
-        } else {
-            activityButtons()[index].text = activityDisplay(index)
-        }
-        if (wasSelected) {
-            selectedActivity = newLabel
-        }
-        updateActivityButtonColor()
-        updateActivityStatusText()
     }
 
     private fun setActivityButtonsEnabled(enabled: Boolean) {
@@ -656,13 +557,12 @@ class ValidationActivity : AppCompatActivity() {
             setPadding(uiDp(16), uiDp(16), uiDp(16), uiDp(16))
         }
         binding.ActivityStatusTextView.apply {
-            background = uiRounded(uiColor("#D7F2EE"), 14)
-            setTextColor(uiColor("#064C4B"))
-            setPadding(uiDp(10), uiDp(12), uiDp(10), uiDp(12))
+            background = null
+            setTextColor(android.graphics.Color.BLACK)
+            setPadding(0, 0, 0, 0)
         }
         binding.TirednessValueTextView.setTextColor(uiColor("#142D3A"))
-        binding.TirednessSeekBar.progressTintList = android.content.res.ColorStateList.valueOf(uiColor("#096B69"))
-        binding.TirednessSeekBar.thumbTintList = android.content.res.ColorStateList.valueOf(uiColor("#096B69"))
+        updateFatigueColor(binding.TirednessSeekBar.progress)
         binding.bottomNavigationView.apply {
             setBackgroundColor(uiColor("#FFFFFF"))
             itemIconTintList = android.content.res.ColorStateList.valueOf(uiColor("#36566B"))
@@ -685,25 +585,70 @@ class ValidationActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateActivityButtonColor() {
-        val colorSelected = ContextCompat.getColor(this, android.R.color.holo_green_light)
-        val colorDefault = ContextCompat.getColor(this, android.R.color.darker_gray)
+    private val activityButtonTargets = mutableMapOf<Button, Int>()
+    private val activityButtonShapes = mutableMapOf<Button, android.graphics.drawable.GradientDrawable>()
+    private val activityButtonColors = mutableMapOf<Button, Int>()
+    private val activityButtonAnimations = mutableMapOf<Button, android.animation.ValueAnimator>()
 
-        val ActivityButtons = listOf(
-            binding.ActivityButton1, binding.ActivityButton2, binding.ActivityButton3,
-            binding.ActivityButton4, binding.ActivityButton5, binding.ActivityButton6
-        )
-
-        ActivityButtons.forEachIndexed { index, button ->
-            uiStyleButton(button, if (activityLabel(index) == selectedActivity) colorSelected else colorDefault)
+    /** Animate the presentation after the watch confirms the selected activity. */
+    private fun styleActivityButton(button: Button, fill: Int) {
+        if (activityButtonTargets[button] == fill) return
+        val previous = activityButtonColors[button] ?: uiColor("#F1F6F7")
+        activityButtonAnimations.remove(button)?.cancel()
+        val shape = activityButtonShapes.getOrPut(button) {
+            uiRounded(previous, 14, uiColor("#C6D3D6")).also { drawable ->
+                button.backgroundTintList = null
+                button.background = android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(0x22000000),
+                    drawable,
+                    uiRounded(android.graphics.Color.WHITE, 14)
+                )
+                button.setTextColor(android.content.res.ColorStateList(
+                    arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+                    intArrayOf(uiColor("#526671"), android.graphics.Color.BLACK)
+                ))
+                button.setAllCaps(false)
+                button.minHeight = uiDp(52)
+                button.minimumHeight = uiDp(52)
+                button.setPadding(uiDp(8), uiDp(10), uiDp(8), uiDp(10))
+                button.elevation = 0f
+                button.stateListAnimator = null
+            }
         }
+        activityButtonTargets[button] = fill
+        if (previous == fill) {
+            shape.setColor(fill)
+            activityButtonColors[button] = fill
+            return
+        }
+        val animation = android.animation.ValueAnimator.ofArgb(previous, fill).apply {
+            duration = 180L
+            addUpdateListener {
+                val color = it.animatedValue as Int
+                shape.setColor(color)
+                activityButtonColors[button] = color
+            }
+        }
+        activityButtonAnimations[button] = animation
+        animation.start()
+    }
 
-        val toggleColor = if (selectedActivity == vraiActivity)
-            ContextCompat.getColor(this, android.R.color.darker_gray)
-        else
-            ContextCompat.getColor(this, android.R.color.holo_orange_light)
+    private fun updateActivityButtonColor() {
+        val idle = uiColor("#F1F6F7")
+        val selected = uiColor("#B9EBC0")
+        val unlabeled = uiColor("#FFD7A6")
+        activityButtons().forEachIndexed { index, button ->
+            styleActivityButton(button, if (hasSelectedActivity && activityLabel(index) == selectedActivity) selected else idle)
+        }
+        styleActivityButton(binding.toggleActivityButton,
+            if (hasSelectedActivity && selectedActivity == activityLabel(unlabeledIndex)) unlabeled else idle)
+    }
 
-        uiStyleButton(binding.toggleActivityButton, toggleColor)
+    private fun updateFatigueColor(progress: Int) {
+        val colors = listOf("#2563EB", "#0EA5E9", "#22A06B", "#E3B341", "#F28C28", "#DC2626")
+        val tint = android.content.res.ColorStateList.valueOf(uiColor(colors[progress.coerceIn(0, colors.lastIndex)]))
+        binding.TirednessSeekBar.thumbTintList = tint
+        binding.TirednessSeekBar.progressTintList = tint
     }
 
     private fun updateActivityStatusText() {
@@ -718,6 +663,7 @@ class ValidationActivity : AppCompatActivity() {
         }
         confirmedCommand("Action: Refresh") {
         selectedActivity = activityLabel(unlabeledIndex)
+        hasSelectedActivity = false
         updateUnlabeledButton("🛑")
         updateActivityButtonColor()
         updateActivityStatusText()

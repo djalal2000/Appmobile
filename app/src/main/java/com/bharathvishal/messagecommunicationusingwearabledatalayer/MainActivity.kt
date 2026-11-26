@@ -68,6 +68,31 @@ class MainActivity : ComponentActivity() {
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var showLangDialog by remember { mutableStateOf(false) }
+                    var showSettingsDialog by remember { mutableStateOf(false) }
+
+                    if (showSettingsDialog) {
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { showSettingsDialog = false },
+                            title = { Text(tr("Settings")) },
+                            text = {
+                                Column {
+                                    TextButton(onClick = {
+                                        showSettingsDialog = false
+                                        showLangDialog = true
+                                    }) { Text(tr("Select Language")) }
+                                    TextButton(onClick = {
+                                        showSettingsDialog = false
+                                        showActivityLabelSettings()
+                                    }) { Text(tr("Rename activity labels")) }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showSettingsDialog = false }) {
+                                    Text(tr("Cancel"))
+                                }
+                            }
+                        )
+                    }
 
                     if (showLangDialog) {
                         LanguageDialog(
@@ -88,7 +113,7 @@ class MainActivity : ComponentActivity() {
                             when (item) {
                                 "Exit" -> finish()
                                 "Smartwatch" -> showConnectedSmartwatches()
-                                "Settings" -> showLangDialog = true
+                                "Settings" -> showSettingsDialog = true
                                 "About" -> showAboutDialog()
                             }
                         }
@@ -97,6 +122,108 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun showActivityLabelSettings() {
+        val professionNames = getSharedPreferences("profession_display_names", MODE_PRIVATE)
+        val options = ActivityLabels.professions
+        val names = options.map { option ->
+            professionNames.getString(option.substringBefore(" - "), null) ?: tr(option)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(tr("Select a profession"))
+            .setItems(names.toTypedArray()) { _, index ->
+                showProfessionActivityLabels(options[index].substringBefore(" - "), names[index])
+            }
+            .setNegativeButton(tr("Cancel"), null)
+            .show()
+    }
+
+    private fun showProfessionActivityLabels(profession: String, professionName: String) {
+        val preferences = getSharedPreferences(ActivityLabels.PREFERENCES, MODE_PRIVATE)
+        val defaults = ActivityLabels.defaults(profession)
+        val labels = defaults.mapIndexed { index, label ->
+            preferences.getString(ActivityLabels.key(profession, index), null) ?: tr(label)
+        }
+        val options = labels + tr("Restore default labels")
+        AlertDialog.Builder(this)
+            .setTitle(professionName)
+            .setItems(options.toTypedArray()) { _, index ->
+                if (index == defaults.size) {
+                    AlertDialog.Builder(this)
+                        .setTitle(tr("Restore default labels"))
+                        .setMessage(tr("Restore the default activity labels for this profession?"))
+                        .setNegativeButton(tr("Cancel")) { _, _ ->
+                            showProfessionActivityLabels(profession, professionName)
+                        }
+                        .setPositiveButton(tr("Confirm")) { _, _ ->
+                            preferences.edit().apply {
+                                defaults.indices.forEach { remove(ActivityLabels.key(profession, it)) }
+                            }.apply()
+                            showProfessionActivityLabels(profession, professionName)
+                        }
+                        .show()
+                } else {
+                    editActivityLabel(profession, professionName, index)
+                }
+            }
+            .setNegativeButton(tr("Cancel"), null)
+            .show()
+    }
+
+    private fun editActivityLabel(profession: String, professionName: String, index: Int) {
+        val preferences = getSharedPreferences(ActivityLabels.PREFERENCES, MODE_PRIVATE)
+        val defaults = ActivityLabels.defaults(profession)
+        val key = ActivityLabels.key(profession, index)
+        val currentLabel = preferences.getString(key, null) ?: tr(defaults[index])
+        val input = android.widget.EditText(this).apply {
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setText(currentLabel)
+            selectAll()
+        }
+        val padding = (24 * resources.displayMetrics.density + 0.5f).toInt()
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(padding, 0, padding, 0)
+            addView(input)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(tr("Rename label"))
+            .setView(container)
+            .setNegativeButton(tr("Cancel")) { _, _ ->
+                showProfessionActivityLabels(profession, professionName)
+            }
+            .setPositiveButton(tr("Save"), null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val newLabel = input.text.toString().trim()
+                when {
+                    newLabel == currentLabel -> {
+                        dialog.dismiss()
+                        showProfessionActivityLabels(profession, professionName)
+                    }
+                    newLabel.isEmpty() -> input.error = tr("Enter a label")
+                    newLabel.any { it == ',' || it == ':' || it.code == 10 || it.code == 13 } ->
+                        input.error = tr("Do not use commas or colons")
+                    defaults.indices.any { other ->
+                        if (other == index) false else {
+                            val custom = preferences.getString(ActivityLabels.key(profession, other), null)
+                            newLabel == (custom ?: defaults[other]) || newLabel == (custom ?: tr(defaults[other]))
+                        }
+                    } -> input.error = tr("This label already exists")
+                    else -> {
+                        preferences.edit().putString(key, newLabel).apply()
+                        dialog.dismiss()
+                        showProfessionActivityLabels(profession, professionName)
+                    }
+                }
+            }
+        }
+        input.requestFocus()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.show()
     }
 
     private fun showAboutDialog() {
@@ -204,55 +331,13 @@ fun MainPage(onMenuItemClick: (String) -> Unit, language: String = AppLanguage.E
     fun tr(text: String) = AppLanguage.translate(language, text)
     var id by remember { mutableStateOf("") }
     var professionFull by remember { mutableStateOf("") }
-    var activityList by remember { mutableStateOf(listOf<String>()) }
 
-    val professions = listOf(
-        "RN - Registered Nurse",
-        "AS - Certified Nursing Assistant",
-        "ASH - Environmental Services worker"
-    )
-    val activityRN = listOf(
-        "Measure temperature",
-        "Inject medication",
-        "Apply dressing",
-        "Take blood pressure",
-        "Activity 5",
-        "Activity 6"
-    )
-
-    val activityCNA = listOf(
-        "Bed-to-bed transfer",
-        "Bed-to-chair transfer",
-        "Toilet assistance",
-        "Bed making",
-        "Office work",
-        "Climbing the stairs"
-    )
-
-    val activityEVS = listOf(
-        "Bed-to-chair transfer",
-        "Room cleaning",
-        "Floor cleaning",
-        "Meal distribution",
-        "Medication storage",
-        "Climbing the stairs"
-    )
-
+    val professions = ActivityLabels.professions
 
     val context = LocalContext.current
 
     fun getAbbreviation(fullProf: String): String {
         return fullProf.split(" - ")[0]
-    }
-
-    LaunchedEffect(professionFull) {
-        val abbrev = getAbbreviation(professionFull)
-        activityList = when (abbrev) {
-            "RN" -> activityRN
-            "AS" -> activityCNA
-            "ASH" -> activityEVS
-            else -> emptyList()
-        }
     }
 
     val formOpacity = remember { Animatable(0.82f) }
@@ -319,7 +404,7 @@ fun MainPage(onMenuItemClick: (String) -> Unit, language: String = AppLanguage.E
                             val intent = Intent(context, ValidationActivity::class.java).apply {
                                 putExtra("id", id)
                                 putExtra("profession", getAbbreviation(professionFull))
-                                putExtra("Activities", activityList.toTypedArray())
+                                putExtra("Activities", ActivityLabels.defaults(getAbbreviation(professionFull)).take(6).toTypedArray())
                             }
                             context.startActivity(intent)
                         },
