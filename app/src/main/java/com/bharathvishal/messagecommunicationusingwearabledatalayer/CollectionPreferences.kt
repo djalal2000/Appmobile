@@ -92,8 +92,6 @@ internal class CollectionPreferences(context: Context) {
         require(validAcquisition(hz, interval))
         val result = JSONObject().put("session", session).put("sensors", JSONArray(sensors.toList()))
             .put("hz", hz).put("interval", interval)
-            .put("study", JSONObject().put("project", project).put("experiment", experiment)
-                .put("site", site).put("protocol", protocol))
         if (custom) result.put("server", JSONObject().put("url", url).put("org", organization)
             .put("activity", activity).put("wearable", wearable).put("token", decrypt()))
         return result

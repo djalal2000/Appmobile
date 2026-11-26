@@ -78,7 +78,11 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
         }
     }
     BackHandler(onBack = ::goBack)
-    val code = selectedCode
+    // Old saved navigation state may point to a page removed in this version.
+    val code = selectedCode?.takeUnless { it in setOf("reliability", "study", "backup") }
+    LaunchedEffect(selectedCode) {
+        if (selectedCode != code) selectedCode = code
+    }
     val title = when (code) {
         null -> tr("Settings")
         "watches" -> ui("Smartwatch management", "Gestion des montres")
@@ -86,11 +90,8 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
         "sensors" -> ui("Sensors", "Capteurs")
         "professions" -> ui("Professions & activities", "Métiers et activités")
         "acquisition" -> ui("Acquisition", "Acquisition")
-        "reliability" -> ui("Connection & reliability", "Connexion et fiabilité")
-        "study" -> ui("Session management", "Gestion des sessions")
         "alerts" -> ui("Notifications", "Notifications")
         "diagnostics" -> "Diagnostics"
-        "backup" -> ui("Backup & restore", "Sauvegarde et restauration")
         else -> name(code)
     }
 
@@ -139,10 +140,6 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                         icon = Icons.Filled.Tune, onClick = { selectedCode = "sensors" })
                     SettingsRow(title = ui("Acquisition", "Acquisition"), subtitle = ui("Sampling and transmission", "Fréquence et transmission"),
                         icon = Icons.Filled.Tune, onClick = { selectedCode = "acquisition" })
-                    SettingsRow(title = ui("Connection & reliability", "Connexion et fiabilité"), subtitle = ui("Transmission safeguards", "Protections des transmissions"),
-                        icon = Icons.Filled.Settings, onClick = { selectedCode = "reliability" })
-                    SettingsRow(title = ui("Session management", "Gestion des sessions"), subtitle = ui("Study metadata", "Métadonnées de recherche"),
-                        icon = Icons.Filled.Info, onClick = { selectedCode = "study" })
                     SectionHeading(ui("Customization", "Personnalisation"))
                     SettingsRow(
                         title = ui("Professions & activities", "Métiers et activités"),
@@ -154,8 +151,6 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                         icon = Icons.Filled.Notifications, onClick = { selectedCode = "alerts" })
                     SettingsRow(title = "Diagnostics", subtitle = ui("Test and troubleshoot", "Tester et résoudre les problèmes"),
                         icon = Icons.Filled.Build, onClick = { selectedCode = "diagnostics" })
-                    SettingsRow(title = ui("Backup & restore", "Sauvegarde et restauration"), subtitle = ui("Export or import collection settings", "Exporter ou importer les réglages de collecte"),
-                        icon = Icons.Filled.Folder, onClick = { selectedCode = "backup" })
                 } else if (code == "professions") {
                     SectionHeading(ui("Choose a profession", "Choisir un métier"))
                     professions.forEach { option ->
@@ -178,7 +173,7 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                     SensorSettings(language)
                 } else if (code == "diagnostics") {
                     DiagnosticsSettings(language, onNavigate = { selectedCode = it })
-                } else if (code in setOf("acquisition", "reliability", "study", "alerts", "backup")) {
+                } else if (code in setOf("acquisition", "alerts")) {
                     AdvancedSettings(requireNotNull(code), language)
                 } else {
                     SectionHeading(ui("Profession name", "Nom du métier"))
