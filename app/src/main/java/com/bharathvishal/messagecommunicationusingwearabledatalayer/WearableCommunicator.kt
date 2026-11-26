@@ -158,20 +158,21 @@ class WearableCommunicator(
     private val pendingCommands = java.util.concurrent.ConcurrentHashMap<String, PendingCommand>()
 
     /** Wait for execution on the watch, not merely successful transport submission. */
-    suspend fun sendConfirmedCommand(message: String): String {
+    suspend fun sendConfirmedCommand(message: String, configuration: org.json.JSONObject? = null): String {
         val node = lastNodeId ?: return "NO_CONNECTION"
         val id = java.util.UUID.randomUUID().toString()
         val pending = PendingCommand(node, kotlinx.coroutines.CompletableDeferred())
         pendingCommands[id] = pending
         try {
             val envelope = org.json.JSONObject().put("id", id).put("payload", message)
+            if (configuration != null) envelope.put("configuration", configuration)
             Wearable.getMessageClient(context)
                 .sendMessage(node, commandPath, envelope.toString().toByteArray(StandardCharsets.UTF_8))
                 .addOnFailureListener { error ->
                     Log.w("WearableComm", "Command transport failed", error)
                     pending.result.complete("UNKNOWN")
                 }
-            return kotlinx.coroutines.withTimeoutOrNull(3000L) { pending.result.await() } ?: "UNKNOWN"
+            return kotlinx.coroutines.withTimeoutOrNull(if (configuration != null) 25000L else 3000L) { pending.result.await() } ?: "UNKNOWN"
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: Exception) {

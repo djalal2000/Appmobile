@@ -72,7 +72,12 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
     }
     BackHandler(onBack = ::goBack)
     val code = selectedCode
-    val title = if (code == null) tr("Settings") else name(code)
+    val title = when (code) {
+        null -> tr("Settings")
+        "server" -> "InfluxDB"
+        "sensors" -> ui("Sensors", "Capteurs")
+        else -> name(code)
+    }
 
     Scaffold(
         containerColor = SettingsBackground,
@@ -110,6 +115,11 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                         title = tr("Select Language"), subtitle = AppLanguage.languageName(language),
                         icon = Icons.Filled.Language, onClick = onLanguageClick
                     )
+                    SectionHeading(ui("Data collection", "Collecte des données"))
+                    SettingsRow(title = "InfluxDB", subtitle = ui("Server, organization, buckets and API token", "Serveur, organisation, buckets et jeton API"),
+                        icon = Icons.Filled.Storage, onClick = { selectedCode = "server" })
+                    SettingsRow(title = ui("Sensors", "Capteurs"), subtitle = ui("Choose signals to collect", "Choisir les signaux à collecter"),
+                        icon = Icons.Filled.Tune, onClick = { selectedCode = "sensors" })
                     SectionHeading(ui("Professions & activities", "Métiers et activités"))
                     professions.forEach { option ->
                         val itemCode = option.substringBefore(" - ")
@@ -123,6 +133,10 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                     Text(ui("Profession codes stay unchanged when you rename them.",
                         "Les codes des métiers restent inchangés lorsque vous les renommez."),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else if (code == "server") {
+                    ServerSettings(language)
+                } else if (code == "sensors") {
+                    SensorSettings(language)
                 } else {
                     SectionHeading(ui("Profession name", "Nom du métier"))
                     SettingsRow(title = name(code),

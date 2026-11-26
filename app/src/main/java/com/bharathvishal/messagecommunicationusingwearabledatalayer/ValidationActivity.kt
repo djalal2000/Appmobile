@@ -187,6 +187,7 @@ class ValidationActivity : AppCompatActivity() {
         }
 
         binding.stopRecordingButton.isEnabled = false
+        setActivityButtonsEnabled(false)
         updateActivityButtonColor()
         updateActivityStatusText()
 
@@ -290,7 +291,16 @@ class ValidationActivity : AppCompatActivity() {
         }
         lifecycleScope.launch {
             try {
-                val result = communicator.sendConfirmedCommand(message)
+                val configuration = if (message.contains("Action: Start")) {
+                    try {
+                        withContext(Dispatchers.IO) { CollectionPreferences(this@ValidationActivity).envelope(java.util.UUID.randomUUID().toString()) }
+                    } catch (error: Exception) {
+                        commandNotice("Invalid settings. Check the InfluxDB token.", "Paramètres invalides. Vérifiez le jeton InfluxDB.")
+                        applyStoppedState()
+                        return@launch
+                    }
+                } else null
+                val result = communicator.sendConfirmedCommand(message, configuration)
                 when (result) {
                     "OK" -> {
                         if (!wearableDeviceConnected) {
@@ -360,7 +370,7 @@ class ValidationActivity : AppCompatActivity() {
         isRecording = false
         isPaused = false
         hasSelectedActivity = false
-        binding.toggleActivityButton.isEnabled = false
+        setActivityButtonsEnabled(false)
         updateActivityButtonColor()
 
         stopTimer()
@@ -380,6 +390,7 @@ class ValidationActivity : AppCompatActivity() {
                 binding.stopRecordingButton.isEnabled = true
                 uiStyleButton(binding.stopRecordingButton, ContextCompat.getColor(this, android.R.color.holo_red_dark))
                 setActivityButtonsEnabled(true)
+                binding.TirednessSeekBar.isEnabled = "fatigue" in CollectionPreferences(this@ValidationActivity).sensors
                 binding.pauseRecordingButton.isEnabled = true
 
                 isRecording = true
@@ -848,7 +859,7 @@ class ValidationActivity : AppCompatActivity() {
     private fun getCurrentFatigueLevel(): Int = binding.TirednessSeekBar.progress
 
     private fun sendFatigueLevel() {
-        if (!wearableDeviceConnected && !isRecording && !commandUncertain) return
+        if (!isRecording || "fatigue" !in CollectionPreferences(this).sensors) return
         val fatigue = getCurrentFatigueLevel()
         confirmedCommand("FatigueLevel: $fatigue", onFailure = {
             binding.TirednessSeekBar.progress = confirmedFatigue

@@ -17,6 +17,7 @@ import com.google.android.gms.wearable.*
 import java.nio.charset.StandardCharsets
 import java.util.*
 import kotlin.concurrent.fixedRateTimer
+import kotlinx.coroutines.*
 
 class WearCommunicationManager(
     private val context: Context,
@@ -93,12 +94,23 @@ class WearCommunicationManager(
     private val pendingSamples = SampleBatch<Data>(bufferSize)
     private var recordingGeneration = 0L
 
+    private val controlScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var startJob: Job? = null
+    private var enabledSensors = SENSOR_KEYS.toSet()
+    private val availableSensors = mutableSetOf<Int>()
+    private val freshSensors = mutableSetOf<Int>()
+    private var sessionId: String? = null
+    private var sequence = 0L
+    private var sessionEpoch = 0L
+    private var sessionElapsed = 0L
+
     private val transmit = TransmissionService(
         context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
     )
 
     fun close() {
         commandHandler.removeCallbacksAndMessages(null)
+        controlScope.cancel()
         stopRecording()
         transmit.close()
     }
@@ -126,7 +138,7 @@ class WearCommunicationManager(
             val messageStr = String(messageEvent.data, StandardCharsets.UTF_8)
             val path = messageEvent.path
 
-            Log.d(TAG, "📩 Message reçu: $path | $messageStr")
+            Log.d(TAG, "Message received: $path")
 
             when (path) {
                 APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
@@ -194,13 +206,44 @@ class WearCommunicationManager(
             }
             val id = envelope.optString("id")
             if (id.length != 36 || runCatching { java.util.UUID.fromString(id) }.isFailure) return@post
-            val result = completedCommands.result(node, id) {
-                executeConfirmedCommand(envelope.optString("payload"))
+            val payload = envelope.optString("payload")
+            fun reply(result: String) {
+                val response = org.json.JSONObject().put("id", id).put("result", result)
+                Wearable.getMessageClient(context).sendMessage(node, commandAckPath,
+                    response.toString().toByteArray(StandardCharsets.UTF_8))
+                    .addOnFailureListener { Log.w(TAG, "Command acknowledgement failed") }
             }
-            val reply = org.json.JSONObject().put("id", id).put("result", result)
-            Wearable.getMessageClient(context)
-                .sendMessage(node, commandAckPath, reply.toString().toByteArray(StandardCharsets.UTF_8))
-                .addOnFailureListener { error -> Log.w(TAG, "Command acknowledgement failed", error) }
+            val config = envelope.optJSONObject("configuration")
+            if (payload.contains("Action: Start") && config != null) {
+                if (startJob?.isActive == true || sensorTimer != null) { reply("REJECTED"); return@post }
+                if (validatedCommand(payload, false) == null) { reply("REJECTED"); return@post }
+                startJob = controlScope.launch {
+                    try {
+                        val keys = config.getJSONArray("sensors").let { array ->
+                            (0 until array.length()).map { array.getString(it) }.toSet()
+                        }
+                        val session = config.getString("session")
+                        if (!validSensorSelection(keys) || runCatching { UUID.fromString(session) }.isFailure ||
+                            !transmit.prepare(config.optJSONObject("server"))) {
+                            reply("REJECTED")
+                            return@launch
+                        }
+                        enabledSensors = keys
+                        sessionId = session
+                        reply(completedCommands.result(node, id) { executeConfirmedCommand(payload) })
+                    } catch (cancelled: CancellationException) {
+                        reply("UNKNOWN")
+                        throw cancelled
+                    } catch (_: Exception) { reply("REJECTED") }
+                }
+            } else {
+                if (payload == "Action: Stop" || payload == "Action: Refresh") startJob?.cancel()
+                if (startJob?.isActive == true && payload != "Action: Stop" && payload != "Action: Refresh") {
+                    reply("REJECTED")
+                } else {
+                    reply(completedCommands.result(node, id) { executeConfirmedCommand(payload) })
+                }
+            }
         }
     }
 
@@ -248,7 +291,7 @@ class WearCommunicationManager(
                 updateUI("📡 Start recording...")
                 startRecording()
                 // Record the declared baseline even when it matches the stored value.
-                transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
+                if ("fatigue" in enabledSensors) transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
             }
 
             "Stop" -> {
@@ -257,12 +300,12 @@ class WearCommunicationManager(
             }
 
             "Pause" -> {
-                paused = true
+                synchronized(recordingLock) { paused = true; lastStepCount = null; freshSensors.clear() }
                 updateUI("⏸️ En pause.")
             }
 
             "Resume" -> {
-                paused = false
+                synchronized(recordingLock) { paused = false; lastStepCount = null; freshSensors.clear(); hvalue = "0"; lastLightLux = -1f }
                 updateUI("▶ Recording in progress...")
             }
 
@@ -284,7 +327,7 @@ class WearCommunicationManager(
             val currentFatigue = sharedPref.getString("Fatigue Level", "0") ?: "0"
             if (it != currentFatigue) {
                 sharedPref.edit().putString("Fatigue Level", it).apply()
-                transmitSensorData(fatigueLevel = it)
+                if (!stop && !paused && "fatigue" in enabledSensors) transmitSensorData(fatigueLevel = it)
             }
         }
 
@@ -346,16 +389,16 @@ class WearCommunicationManager(
 
         val samplingPeriodUs = (SAMPLING_PERIOD_MS * 1000).toInt()
 
-        listOf(
-            accel, gyro, gravitySensor, hrate,
-            lightSensor, pressureSensor,
-            linac, rotat, stepCounter
-        ).forEach { sensor ->
+        availableSensors.clear()
+        listOf("accelerometer" to accel, "gyroscope" to gyro, "gravity" to gravitySensor,
+            "heart" to hrate, "light" to lightSensor, "pressure" to pressureSensor,
+            "linear" to linac, "rotation" to rotat, "steps" to stepCounter)
+            .filter { it.first in enabledSensors }.forEach { (_, sensor) ->
             sensor?.let {
                 try {
                     if (!sensorManager.registerListener(sensorListener, it, samplingPeriodUs)) {
                         Log.w(TAG, "Sensor registration failed: ${it.type}")
-                    }
+                    } else availableSensors.add(it.type)
                 } catch (error: SecurityException) {
                     Log.w(TAG, "Sensor permission unavailable: ${it.type}", error)
                 }
@@ -373,7 +416,9 @@ class WearCommunicationManager(
                 }
                 if (it.values.size < required || it.values.take(required).any { value -> !value.isFinite() }) return
                 synchronized(recordingLock) {
-                if (stop) return
+                if (stop || paused || it.sensor.type !in availableSensors) return
+                freshSensors.add(it.sensor.type)
+                val eventTime = System.currentTimeMillis() - ((android.os.SystemClock.elapsedRealtimeNanos() - it.timestamp).coerceAtLeast(0L) / 1000000L)
                 when (it.sensor.type) {
 
                     Sensor.TYPE_HEART_RATE -> {
@@ -381,7 +426,7 @@ class WearCommunicationManager(
                         Log.d(TAG, "❤️ Heart rate: $newBpm BPM")
                         if (newBpm != hvalue) {
                             hvalue = newBpm
-                            transmitSensorData(bpm = hvalue)
+                            transmitSensorData(bpm = hvalue, eventTime = eventTime)
                             updateUI()
                         }
                     }
@@ -404,14 +449,13 @@ class WearCommunicationManager(
                         if (previousCount == null) {
                             // Establish the session baseline from an actual sensor event.
                             lastStepCount = totalSteps
-                            stepCount = 0
-                            transmitSensorData(steps = stepCount)
+                            transmitSensorData(steps = stepCount, eventTime = eventTime)
                         } else {
                             val newSteps = totalSteps - previousCount
                             if (newSteps > 0) {
                                 stepCount += newSteps
                                 lastStepCount = totalSteps
-                                transmitSensorData(steps = stepCount)
+                                transmitSensorData(steps = stepCount, eventTime = eventTime)
                                 updateUI()
                             } else if (newSteps < 0) {
                                 // Re-establish the baseline if the hardware counter resets.
@@ -427,14 +471,14 @@ class WearCommunicationManager(
                         if (newLux != lastLightLux) {
                             lastLightLux = newLux
                             lightLux = newLux
-                            transmitSensorData(light = lightLux)
+                            transmitSensorData(light = lightLux, eventTime = eventTime)
                             updateUI()
                         }
                     }
 
                     Sensor.TYPE_PRESSURE -> {
                         pressureHpa = it.values[0]
-                        transmitSensorData(pressure = pressureHpa)
+                        transmitSensorData(pressure = pressureHpa, eventTime = eventTime)
                     }
 
                     Sensor.TYPE_GRAVITY -> {
@@ -469,7 +513,8 @@ class WearCommunicationManager(
         light: Float? = null,
         pressure: Float? = null,
         steps: Int? = null,
-        fatigueLevel: String? = null
+        fatigueLevel: String? = null,
+        eventTime: Long = System.currentTimeMillis()
     ) {
         val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
         val data = Data(
@@ -478,7 +523,7 @@ class WearCommunicationManager(
             light = light,
             pressure = pressure,
             steps = steps,
-            fatigueLevel = fatigueLevel
+            fatigueLevel = fatigueLevel, epochMillis = eventTime, sessionId = sessionId
         )
         transmit.transmitWearableData(listOf(data))
     }
@@ -487,6 +532,12 @@ class WearCommunicationManager(
         synchronized(recordingLock) {
             if (sensorTimer != null) return
             stop = false; paused = false
+            freshSensors.clear()
+            hvalue = "0"; lastLightLux = -1f; lastStepCount = null; stepCount = 0
+            sequence = 0L
+            sessionEpoch = System.currentTimeMillis()
+            sessionElapsed = android.os.SystemClock.elapsedRealtime()
+            if (sessionId == null) sessionId = UUID.randomUUID().toString()
             try {
                 setupSensors()
             } catch (error: Exception) {
@@ -504,24 +555,25 @@ class WearCommunicationManager(
                         val currentActivity = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
                         val data = Data(
                             person_id = personID,
-                            acceX = xaccel,
-                            acceY = yaccel,
-                            acceZ = zaccel,
-                            gyroX = xgyro,
-                            gyroY = ygyro,
-                            gyroZ = zgyro,
-                            gravityX = xGravity,
-                            gravityY = yGravity,
-                            gravityZ = zGravity,
-                            linAccX = xLinAcc,
-                            linAccY = yLinAcc,
-                            linAccZ = zLinAcc,
-                            rotX = xRot,
-                            rotY = yRot,
-                            rotZ = zRot,
-                            rotW = wRot,
+                            acceX = xaccel.takeIf { Sensor.TYPE_ACCELEROMETER in freshSensors },
+                            acceY = yaccel.takeIf { Sensor.TYPE_ACCELEROMETER in freshSensors },
+                            acceZ = zaccel.takeIf { Sensor.TYPE_ACCELEROMETER in freshSensors },
+                            gyroX = xgyro.takeIf { Sensor.TYPE_GYROSCOPE in freshSensors },
+                            gyroY = ygyro.takeIf { Sensor.TYPE_GYROSCOPE in freshSensors },
+                            gyroZ = zgyro.takeIf { Sensor.TYPE_GYROSCOPE in freshSensors },
+                            gravityX = xGravity.takeIf { Sensor.TYPE_GRAVITY in freshSensors },
+                            gravityY = yGravity.takeIf { Sensor.TYPE_GRAVITY in freshSensors },
+                            gravityZ = zGravity.takeIf { Sensor.TYPE_GRAVITY in freshSensors },
+                            linAccX = xLinAcc.takeIf { Sensor.TYPE_LINEAR_ACCELERATION in freshSensors },
+                            linAccY = yLinAcc.takeIf { Sensor.TYPE_LINEAR_ACCELERATION in freshSensors },
+                            linAccZ = zLinAcc.takeIf { Sensor.TYPE_LINEAR_ACCELERATION in freshSensors },
+                            rotX = xRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
+                            rotY = yRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
+                            rotZ = zRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
+                            rotW = wRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             label = currentActivity,
-                            pressure = pressureHpa
+                            sessionId = sessionId, sequence = sequence++,
+                            epochMillis = sessionEpoch + (android.os.SystemClock.elapsedRealtime() - sessionElapsed)
                         )
                         pendingSamples.add(data)
                         if (pendingSamples.isFull()) {

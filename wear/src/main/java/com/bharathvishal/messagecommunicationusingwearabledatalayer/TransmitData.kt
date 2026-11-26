@@ -25,32 +25,57 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     private val bucketWearable = "wearable"
     private val influxUrl = "https://indb1.chl2.connected-health.fr"
 
-
-    private val loggingInterceptor = HttpLoggingInterceptor { message -> Log.d("OkHttp", message) }.apply {
-        redactHeader("Authorization")
-        level = if (debugLogs) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
-    }
+    private data class Destination(val url: String, val organization: String, val activity: String,
+        val wearable: String, val credential: String)
+    private val original = Destination(influxUrl, org, bucketActivity, bucketWearable, token)
+    @Volatile private var destination = original
 
     private val client = OkHttpClient.Builder()
-        .addInterceptor(loggingInterceptor)
-        .addInterceptor { chain ->
-            val request = chain.request().newBuilder()
-                .addHeader("Authorization", "Token $token")
-                .addHeader("Content-Type", "text/plain")
-                .build()
-            chain.proceed(request)
-        }
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .callTimeout(65, TimeUnit.SECONDS)
+        .followRedirects(false).followSslRedirects(false)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .build()
+    private val probeClient = client.newBuilder().callTimeout(7, TimeUnit.SECONDS).build()
 
-    private val retrofit = Retrofit.Builder()
-        .baseUrl(influxUrl)
-        .client(client)
-        .build()
+    private fun service(target: Destination, http: OkHttpClient): InfluxService {
+        val authenticated = http.newBuilder().addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder()
+                .header("Authorization", "Token " + target.credential)
+                .header("Content-Type", "text/plain").build())
+        }.build()
+        return Retrofit.Builder().baseUrl(target.url.trimEnd('/') + "/").client(authenticated).build()
+            .create(InfluxService::class.java)
+    }
+    @Volatile private var influxService = service(original, client)
 
-    private val influxService = retrofit.create(InfluxService::class.java)
+    /** No points are inserted by the empty-body write probe. */
+    suspend fun prepare(server: JSONObject?): Boolean {
+        if (pendingCount() != 0L) return false
+        val target = if (server == null) original else try {
+            Destination(server.getString("url"), server.getString("org"), server.getString("activity"),
+                server.getString("wearable"), server.getString("token"))
+        } catch (_: Exception) { return false }
+        if (!validServerUrl(target.url) || target.organization.isBlank() || target.activity.isBlank() ||
+            target.wearable.isBlank() || target.activity == target.wearable || target.credential.isBlank()) return false
+        return try {
+            val probe = service(target, probeClient)
+            for (bucket in listOf(target.activity, target.wearable)) {
+                val response = probe.sendLineProtocol(target.organization, bucket, "ms", "".toRequestBody("text/plain".toMediaType()))
+                val ok = response.isSuccessful
+                response.body()?.close()
+                response.errorBody()?.close()
+                if (!ok) return false
+            }
+            if (pendingCount() != 0L) return false
+            influxService = service(target, client)
+            destination = target
+            true
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+    }
+
+    fun pendingCount(): Long = synchronized(writeLock) { activityWrites.pending + wearableWrites.pending }
 
     private class BucketWrites {
         var pending = 0L
@@ -69,7 +94,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     init {
         scope.launch {
             for (samples in activityQueue) {
-                writeBucket(bucketActivity, activityWrites, "InfluxDB", "LineProtocol", 1) {
+                writeBucket(destination.activity, activityWrites, "InfluxDB", "LineProtocol", 1) {
                     samples.flatMap { sample ->
                         listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
                             .filter { it.isNotBlank() }
@@ -85,7 +110,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                     val next = wearableQueue.tryReceive().getOrNull() ?: break
                     submissions.add(next)
                 }
-                writeBucket(bucketWearable, wearableWrites, "InfluxDB_Wearable",
+                writeBucket(destination.wearable, wearableWrites, "InfluxDB_Wearable",
                     "LineProtocolWearable", submissions.size) {
                     submissions.flatten().map { it.toLineProtocolWearable() }
                         .filter { it.isNotBlank() }.joinToString("\n")
@@ -151,11 +176,11 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             if (lineProtocol.isBlank()) return
             // A retry must preserve the original payload and timestamps.
             val requestBody = lineProtocol.toRequestBody("text/plain".toMediaType())
-            if (debugLogs) Log.d(lineTag, "➡️ $lineProtocol")
+            // Do not log participant data or credentials.
             for (attempt in 0..1) {
                 try {
                     val response = influxService.sendLineProtocol(
-                        org = org, bucket = bucket, precision = "ms", body = requestBody
+                        org = destination.organization, bucket = bucket, precision = "ms", body = requestBody
                     )
                     val code = response.code()
                     val successful = response.isSuccessful

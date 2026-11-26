@@ -4,6 +4,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private fun escapeTag(value: String): String = value.replace("\\", "\\\\")
+    .replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
+    .replace("\n", " ").replace("\r", " ")
+
 fun parseTimestampToMillis(timeStr: String?): Long {
     if (timeStr == null) return System.currentTimeMillis()
     return try {
@@ -43,13 +47,16 @@ data class Data(
     val fatigueLevel: String? = null,
     val steps: Int? = null,
     val light: Float? = null,
-    val pressure: Float? = null
+    val pressure: Float? = null,
+    val epochMillis: Long? = null,
+    val sessionId: String? = null,
+    val sequence: Long? = null
 ) {
 
     fun toLineProtocol(): String {
-        val timestampMs = parseTimestampToMillis(timestamp)
-        val safePersonId = (person_id ?: "unknown").replace(" ", "\\ ")
-        val safeLabel = (label ?: "none").replace("\"", "").replace(" ", "\\ ")
+        val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
+        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "")
+        val safeLabel = escapeTag(label ?: "none")
 
         val fields = mutableListOf<String>()
 
@@ -78,24 +85,26 @@ data class Data(
         rotW?.takeIf { it.isFinite() }?.let { fields.add("rotW=$it") }
 
         if (fields.isEmpty()) return ""
+        sequence?.let { fields.add("sequence=${it}i") }
 
         return "inertial_data,person_id=$safePersonId,label=$safeLabel ${fields.joinToString(",")} $timestampMs"
     }
 
     fun toLineProtocolActivity(): String {
-        val timestampMs = parseTimestampToMillis(timestamp)
-        val safePersonId = (person_id ?: "unknown").replace(" ", "\\ ")
-        val safeLabel = (label ?: "none").replace("\"", "").replace(" ", "\\ ")
+        val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
+        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "")
+        val safeLabel = escapeTag(label ?: "none")
 
         val fields = mutableListOf<String>()
         if (fields.isEmpty()) fields.add("dummy=1")
+        sequence?.let { fields.add("sequence=${it}i") }
 
         return "activity,person_id=$safePersonId,label=$safeLabel ${fields.joinToString(",")} $timestampMs"
     }
 
     fun toLineProtocolWearable(): String {
-        val timestampMs = parseTimestampToMillis(timestamp)
-        val safePersonId = (person_id ?: "unknown").replace(" ", "\\ ")
+        val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
+        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "")
 
         val lines = mutableListOf<String>()
 
