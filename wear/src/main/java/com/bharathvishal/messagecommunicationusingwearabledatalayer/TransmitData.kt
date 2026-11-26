@@ -1,6 +1,7 @@
 package com.bharathvishal.messagecommunicationusingwearabledatalayer
 
 import android.util.Log
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -116,8 +117,8 @@ class TransmissionService(private val debugLogs: Boolean = false) {
         }
     }
 
-    fun writeStatus(): org.json.JSONObject = synchronized(writeLock) {
-        org.json.JSONObject()
+    fun writeStatus(): JSONObject = synchronized(writeLock) {
+        JSONObject()
             .put("activity", activityWrites.last)
             .put("wearable", wearableWrites.last)
             .put("pending", activityWrites.pending + wearableWrites.pending)
