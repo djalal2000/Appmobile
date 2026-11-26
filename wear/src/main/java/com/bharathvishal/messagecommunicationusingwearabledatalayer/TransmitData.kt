@@ -182,13 +182,13 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     private fun sessionField(value: String): String = "\"" + value.replace("\\", "\\\\")
         .replace("\"", "\\\"").replace("\n", " ").replace("\r", " ") + "\""
 
-    fun transmitSession(id: String, person: String, study: JSONObject, hz: Long, sensors: Set<String>, epoch: Long) {
+    fun transmitSession(id: String, person: String, study: JSONObject, hz: Long, sensors: Set<String>, epoch: Long, watchId: String? = null) {
         // Metadata is additive; existing measurements retain their fields and names.
         val fields = listOf("project", "experiment", "site", "protocol").mapNotNull { key ->
             study.optString(key).take(120).takeIf { it.isNotBlank() }?.let { "$key=" + sessionField(it) }
         }
         if (fields.isEmpty()) return
-        val metadata = Data(person_id = person, sessionId = id, epochMillis = epoch,
+        val metadata = Data(person_id = person, sessionId = id, epochMillis = epoch, watchId = watchId,
             sessionFields = (fields + listOf("sampling_hz=${hz}i", "sensors=" + sessionField(sensors.sorted().joinToString(";")))).joinToString(","))
         enqueue(activityQueue, activityWrites, listOf(metadata), "InfluxDB")
     }

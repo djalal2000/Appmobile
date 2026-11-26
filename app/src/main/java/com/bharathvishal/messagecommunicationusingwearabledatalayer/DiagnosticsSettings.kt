@@ -26,7 +26,8 @@ internal suspend fun runDiagnostics(context: Context, journalOnly: Boolean = fal
     val id = UUID.randomUUID().toString()
     val client = Wearable.getMessageClient(context)
     val node = try {
-        Tasks.await(Wearable.getNodeClient(context).connectedNodes, 7, TimeUnit.SECONDS).singleOrNull()
+        val target = WatchRegistry(context).target
+        Tasks.await(Wearable.getNodeClient(context).connectedNodes, 7, TimeUnit.SECONDS).firstOrNull { it.id == target }
     } catch (_: Exception) { null }
     if (node == null) return@withContext DiagnosticResult("NODE")
     val result = CompletableDeferred<JSONObject>()
@@ -88,7 +89,7 @@ internal fun DiagnosticsSettings(language: String, onNavigate: (String) -> Unit)
             DiagnosticCard(t("Configuration", "Configuration"), t("Token or settings cannot be loaded.", "Jeton ou paramètres illisibles."),
                 t("Open InfluxDB settings", "Ouvrir les paramètres InfluxDB")) { onNavigate("server") }
         } else if (report.code == "NODE") {
-            DiagnosticCard(t("Watch connection", "Connexion montre"), t("Connect exactly one watch. Check Bluetooth and pairing.", "Connectez une seule montre. Vérifiez Bluetooth et l’appairage."),
+            DiagnosticCard(t("Watch connection", "Connexion montre"), t("Select a registered watch in Settings. Check Bluetooth and pairing.", "Sélectionnez une montre enregistrée dans les paramètres. Vérifiez Bluetooth et l’appairage."),
                 t("Open Bluetooth", "Ouvrir Bluetooth")) { system(Settings.ACTION_BLUETOOTH_SETTINGS) }
         } else if (report.code != "OK") {
             DiagnosticCard(t("Watch application", "Application montre"), t("No reply. Open PEMESA on the watch, then retry.", "Aucune réponse. Ouvrez PEMESA sur la montre puis réessayez."),

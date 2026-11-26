@@ -51,18 +51,19 @@ data class Data(
     val epochMillis: Long? = null,
     val sessionId: String? = null,
     val sequence: Long? = null,
-    val sessionFields: String? = null
+    val sessionFields: String? = null,
+    val watchId: String? = null
 ) {
 
     internal fun toSessionProtocol(): String {
         val fields = sessionFields ?: return ""
-        val tags = "person_id=" + escapeTag(person_id ?: "unknown") + ",session_id=" + escapeTag(sessionId ?: "unknown")
+        val tags = "person_id=" + escapeTag(person_id ?: "unknown") + ",session_id=" + escapeTag(sessionId ?: "unknown") + (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "")
         return "session_metadata,$tags $fields ${epochMillis ?: parseTimestampToMillis(timestamp)}"
     }
 
     fun toLineProtocol(): String {
         val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
-        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "")
+        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "") + (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "")
         val safeLabel = escapeTag(label ?: "none")
 
         val fields = mutableListOf<String>()
@@ -99,7 +100,7 @@ data class Data(
 
     fun toLineProtocolActivity(): String {
         val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
-        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "")
+        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "") + (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "")
         val safeLabel = escapeTag(label ?: "none")
 
         val fields = mutableListOf<String>()
@@ -111,7 +112,7 @@ data class Data(
 
     fun toLineProtocolWearable(): String {
         val timestampMs = epochMillis ?: parseTimestampToMillis(timestamp)
-        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "")
+        val safePersonId = escapeTag(person_id ?: "unknown") + (sessionId?.let { ",session_id=" + escapeTag(it) } ?: "") + (watchId?.let { ",watch_id=" + escapeTag(it) } ?: "")
 
         val lines = mutableListOf<String>()
 

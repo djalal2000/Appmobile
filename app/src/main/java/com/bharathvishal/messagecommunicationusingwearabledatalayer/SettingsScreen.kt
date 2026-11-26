@@ -27,7 +27,7 @@ private val SettingsPistachio = Color(0xFFD6EDA5)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClick: () -> Unit) {
+internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClick: () -> Unit, initialPage: String? = null) {
     val context = LocalContext.current
     val namePrefs = remember(context) {
         context.getSharedPreferences(PROFESSION_NAMES_PREFERENCES, Context.MODE_PRIVATE)
@@ -62,7 +62,7 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
     fun label(code: String, index: Int): String =
         labels[ActivityLabels.key(code, index)] ?: tr(ActivityLabels.defaults(code)[index])
 
-    var selectedCode by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedCode by rememberSaveable { mutableStateOf(initialPage) }
     var editingIndex by rememberSaveable { mutableStateOf<Int?>(null) }
     var draft by rememberSaveable { mutableStateOf("") }
     var resetTarget by rememberSaveable { mutableStateOf<String?>(null) }
@@ -81,6 +81,7 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
     val code = selectedCode
     val title = when (code) {
         null -> tr("Settings")
+        "watches" -> ui("Smartwatch management", "Gestion des montres")
         "server" -> "InfluxDB"
         "sensors" -> ui("Sensors", "Capteurs")
         "professions" -> ui("Professions & activities", "Métiers et activités")
@@ -129,6 +130,8 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                         title = tr("Select Language"), subtitle = AppLanguage.languageName(language),
                         icon = Icons.Filled.Language, onClick = onLanguageClick
                     )
+                    SettingsRow(title = ui("Smartwatch management", "Gestion des montres"), subtitle = ui("Pair and select a research watch", "Associer et sélectionner une montre"),
+                        icon = Icons.Filled.Watch, onClick = { selectedCode = "watches" })
                     SectionHeading(ui("Data collection", "Collecte des données"))
                     SettingsRow(title = "InfluxDB", subtitle = ui("Server, organization, buckets and API token", "Serveur, organisation, buckets et jeton API"),
                         icon = Icons.Filled.Storage, onClick = { selectedCode = "server" })
@@ -167,6 +170,8 @@ internal fun SettingsScreen(language: String, onBack: () -> Unit, onLanguageClic
                     Text(ui("Profession codes stay unchanged when you rename them.",
                         "Les codes des métiers restent inchangés lorsque vous les renommez."),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else if (code == "watches") {
+                    SmartwatchSettings(language)
                 } else if (code == "server") {
                     ServerSettings(language)
                 } else if (code == "sensors") {

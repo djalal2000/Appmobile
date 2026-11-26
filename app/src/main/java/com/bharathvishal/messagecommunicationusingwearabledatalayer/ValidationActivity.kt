@@ -212,6 +212,7 @@ class ValidationActivity : AppCompatActivity() {
         setupActivityButtons()
         setupBottomNavigation()
         applyUiDesign()
+        if (WatchRegistry(this).pinned != null) markCommandUncertain()
     }
 
     override fun onResume() {
@@ -299,6 +300,13 @@ class ValidationActivity : AppCompatActivity() {
             onFailure()
             return
         }
+        if (message.contains("Action: Start")) {
+            val node = communicator.lastNodeId
+            if (node == null || !WatchRegistry(this).pin(node)) {
+                commandNotice("Select and associate a watch in Settings first.", "Sélectionnez et associez une montre dans les paramètres.")
+                onFailure(); return
+            }
+        }
         commandGate.begin(message)
         // Permit a Stop request even while the Start acknowledgement is in flight.
         if (message.contains("Action: Start")) {
@@ -314,6 +322,7 @@ class ValidationActivity : AppCompatActivity() {
                     } catch (error: Exception) {
                         HealthJournal.add(HealthCode.CONFIG_INVALID)
                         commandNotice("Invalid settings. Check the InfluxDB token.", "Paramètres invalides. Vérifiez le jeton InfluxDB.")
+                        communicator.lastNodeId?.let { WatchRegistry(this@ValidationActivity).release(it) }
                         applyStoppedState()
                         return@launch
                     }
@@ -328,6 +337,7 @@ class ValidationActivity : AppCompatActivity() {
                             return@launch
                         }
                         if (message == "Action: Stop" || message == "Action: Refresh") {
+                            communicator.lastNodeId?.let { WatchRegistry(this@ValidationActivity).release(it) }
                             commandUncertain = false
                             binding.TirednessSeekBar.isEnabled = true
                         }
@@ -427,7 +437,7 @@ class ValidationActivity : AppCompatActivity() {
                 Toast.makeText(this, localized("Recording started"), Toast.LENGTH_SHORT).show()
                 }
             } else {
-                Toast.makeText(this, localized("Watch not connected."), Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, commandText("Select a connected PEMESA watch in Settings.", "Sélectionnez une montre PEMESA connectée dans les paramètres."), Toast.LENGTH_SHORT).show()
             }
         }
 

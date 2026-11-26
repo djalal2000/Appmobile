@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         communicationManager = WearCommunicationManager(this, binding)
+        binding.pairPhoneButton.setOnClickListener { communicationManager.showPairingCode() }
 
         // Log the sensors available on this device.
         listAllSensors()

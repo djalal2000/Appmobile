@@ -111,11 +111,18 @@ class WearCommunicationManager(
     private var lastInvalidNotice = 0L
     private var lastReportedInvalid = false
 
+    private val devicePrefs = context.getSharedPreferences("pemesa_watch_identity", Context.MODE_PRIVATE)
+    private val watchId: String = devicePrefs.getString("id", null) ?: UUID.randomUUID().toString().also { devicePrefs.edit().putString("id", it).apply() }
+    private val pairing = PairingChallenge(clock = { android.os.SystemClock.elapsedRealtime() })
+    private var pairDialog: androidx.appcompat.app.AlertDialog? = null
+    private fun authorized(node: String): Boolean = devicePrefs.getString("owner", null) == node
+
     private val transmit = TransmissionService(
         context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
     )
 
     fun close() {
+        pairing.cancel(); pairDialog?.dismiss(); pairDialog = null
         commandHandler.removeCallbacksAndMessages(null)
         HealthJournal.add(HealthCode.STOP_OK)
         controlScope.cancel()
@@ -148,7 +155,9 @@ class WearCommunicationManager(
 
             Log.d(TAG, "Message received: $path")
 
+            if (path != "/pemesa/device-v1" && !authorized(messageEvent.sourceNodeId)) return
             when (path) {
+                "/pemesa/device-v1" -> receiveDeviceRequest(messageEvent.sourceNodeId, messageStr)
                 APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
                     val nodeId = messageEvent.sourceNodeId
                     val payload = "AppOpenWearableACK".toByteArray()
@@ -192,11 +201,66 @@ class WearCommunicationManager(
 
                 "/pemesa/diagnostics-v1" -> receiveDiagnostics(messageEvent.sourceNodeId, messageStr)
                 commandPath -> receiveConfirmedCommand(messageEvent.sourceNodeId, messageStr)
-                MESSAGE_ITEM_RECEIVED_PATH -> handleMessagePayload(messageStr)
+                MESSAGE_ITEM_RECEIVED_PATH -> Unit // All recording commands require a correlated ACK.
                 else -> Log.w(TAG, "⚠️ Path non reconnu: $path")
             }
         } catch (e: Exception) {
             Log.e(TAG, "💥 Erreur réception message", e)
+        }
+    }
+
+    private fun associationBusy(): Boolean = sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L
+
+    fun showPairingCode() {
+        if (associationBusy()) {
+            android.widget.Toast.makeText(context, "Stop recording and wait for pending writes", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        pairDialog?.dismiss()
+        val code = pairing.open()
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(context)
+            .setTitle("PEMESA pairing")
+            .setMessage("Enter this code on your phone:\n\n$code\n\nValid for 2 minutes")
+            .setNegativeButton("Cancel", null).create()
+        pairDialog = dialog
+        dialog.setOnDismissListener { if (pairDialog === dialog) { pairing.cancel(); pairDialog = null } }
+        dialog.show()
+        commandHandler.postDelayed({ if (pairDialog === dialog) dialog.dismiss() }, 120000L)
+    }
+
+    private fun receiveDeviceRequest(node: String, message: String) {
+        commandHandler.post {
+            val request = runCatching { org.json.JSONObject(message) }.getOrNull() ?: return@post
+            val id = request.optString("id")
+            if (runCatching { UUID.fromString(id) }.isFailure) return@post
+            val reply = org.json.JSONObject().put("id", id)
+            when (request.optString("action")) {
+                "info" -> {
+                    val battery = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                    reply.put("watchId", watchId).put("associated", authorized(node))
+                        .put("battery", battery?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1)
+                }
+                "pair" -> {
+                    val ok = !associationBusy() && pairing.verify(request.optString("code")) &&
+                        devicePrefs.edit().putString("owner", node).commit()
+                    reply.put("ok", ok)
+                    if (ok) {
+                        reply.put("watchId", watchId)
+                        pairDialog?.dismiss()
+                        android.widget.Toast.makeText(context, "PEMESA associated", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+                "identify" -> {
+                    val ok = authorized(node)
+                    if (ok) {
+                        binding.root.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                        android.widget.Toast.makeText(context, "PEMESA: this is your selected watch", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    reply.put("ok", ok)
+                }
+                else -> return@post
+            }
+            Wearable.getMessageClient(context).sendMessage(node, "/pemesa/device-v1", reply.toString().toByteArray(StandardCharsets.UTF_8))
         }
     }
 
@@ -279,7 +343,9 @@ class WearCommunicationManager(
                     response.toString().toByteArray(StandardCharsets.UTF_8))
                     .addOnFailureListener { Log.w(TAG, "Command acknowledgement failed") }
             }
+            if (!authorized(node)) { reply("REJECTED"); return@post }
             val config = envelope.optJSONObject("configuration")
+            if (payload.contains("Action: Start") && config == null) { reply("REJECTED"); return@post }
             if (payload.contains("Action: Start") && config != null) {
                 if (startJob?.isActive == true || sensorTimer != null) { reply("REJECTED"); return@post }
                 if (validatedCommand(payload, false) == null) { reply("REJECTED"); return@post }
@@ -367,7 +433,7 @@ class WearCommunicationManager(
                 // Record the declared baseline even when it matches the stored value.
                 if ("fatigue" in enabledSensors) transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
                 transmit.transmitSession(sessionId ?: "", personID ?: "unknown", studyMetadata,
-                    1000L / samplingPeriodMs, enabledSensors, sessionEpoch)
+                    1000L / samplingPeriodMs, enabledSensors, sessionEpoch, watchId)
             }
 
             "Stop" -> {
@@ -611,7 +677,7 @@ class WearCommunicationManager(
             light = light,
             pressure = pressure,
             steps = steps,
-            fatigueLevel = fatigueLevel, epochMillis = eventTime, sessionId = sessionId
+            fatigueLevel = fatigueLevel, epochMillis = eventTime, sessionId = sessionId, watchId = watchId
         )
         transmit.transmitWearableData(listOf(data))
     }
@@ -662,7 +728,7 @@ class WearCommunicationManager(
                             rotZ = zRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             rotW = wRot.takeIf { Sensor.TYPE_ROTATION_VECTOR in freshSensors },
                             label = currentActivity,
-                            sessionId = sessionId, sequence = sequence++,
+                            sessionId = sessionId, sequence = sequence++, watchId = watchId,
                             epochMillis = sessionEpoch + (android.os.SystemClock.elapsedRealtime() - sessionElapsed)
                         )
                         pendingSamples.add(data)

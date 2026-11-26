@@ -29,6 +29,7 @@ class WearableCommunicator(
     private val onWearableConnected: (Boolean, Boolean) -> Unit
 ) : MessageClient.OnMessageReceivedListener {
 
+    private val registry = WatchRegistry(context)
     private val wearableAppCheckPayload = "AppOpenWearable"
     private val wearableAppCheckPayloadReturnACK = "AppOpenWearableACK"
     private val connectionCheckMutex = Mutex()
@@ -104,7 +105,8 @@ class WearableCommunicator(
                 val nodes = Tasks.await(Wearable.getNodeClient(context).connectedNodes,
                     connectionTimeoutMs, TimeUnit.MILLISECONDS)
                 if (listenerRegistration !== registration) return@withLock
-                val node = nodes.firstOrNull()
+                val target = selectedReachableNode(registry.selected, registry.pinned, nodes.map { it.id })
+                val node = nodes.firstOrNull { it.id == target }
                 if (node == null) {
                     lastNodeId = null
                     withContext(Dispatchers.Main) {
@@ -128,6 +130,7 @@ class WearableCommunicator(
                     true
                 } ?: false
 
+                if (appOpen) registry.seen(node.id)
                 withContext(Dispatchers.Main) {
                     if (listenerRegistration === registration) onWearableConnected(true, appOpen)
                 }
@@ -160,7 +163,7 @@ class WearableCommunicator(
 
     /** Wait for execution on the watch, not merely successful transport submission. */
     suspend fun sendConfirmedCommand(message: String, configuration: org.json.JSONObject? = null): String {
-        val node = lastNodeId ?: return "NO_CONNECTION"
+        val node = lastNodeId?.takeIf { it == registry.target } ?: return "NO_CONNECTION"
         val id = java.util.UUID.randomUUID().toString()
         val pending = PendingCommand(node, kotlinx.coroutines.CompletableDeferred())
         pendingCommands[id] = pending
@@ -198,7 +201,7 @@ class WearableCommunicator(
     }
 
     fun sendMessage(message: String) {
-        val nodeId = lastNodeId
+        val nodeId = lastNodeId?.takeIf { it == registry.target }
         if (nodeId == null) {
             Log.w("WearableSend", "❌ Aucun noeud disponible pour l'envoi : $message")
             Toast.makeText(context, context.localized("No watch connected"), Toast.LENGTH_SHORT).show()
@@ -238,7 +241,7 @@ class WearableCommunicator(
 
     override fun onMessageReceived(event: MessageEvent) {
         val message = String(event.data, StandardCharsets.UTF_8)
-        Log.d("WearableReceive", "📩 Message reçu depuis ${event.sourceNodeId} (path=${event.path}) : $message")
+        Log.d("WearableReceive", "Message received: ${event.path}")
 
         when (event.path) {
             APP_OPEN_WEARABLE_PAYLOAD_PATH -> {
@@ -257,7 +260,7 @@ class WearableCommunicator(
             influxStatusPath -> receiveInfluxStatus(event, message)
             commandAckPath -> receiveCommandAck(event, message)
             MESSAGE_ITEM_RECEIVED_PATH -> {
-                onMessageReceivedCallback(message)
+                if (event.sourceNodeId == lastNodeId && event.sourceNodeId == registry.target) onMessageReceivedCallback(message)
             }
             else -> {
                 Log.w("WearableReceive", "⚠️ Message reçu avec un chemin inconnu : ${event.path}")

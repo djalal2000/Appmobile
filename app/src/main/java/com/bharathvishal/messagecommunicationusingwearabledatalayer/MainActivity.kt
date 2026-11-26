@@ -71,6 +71,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var showLangDialog by remember { mutableStateOf(false) }
                     var showSettings by rememberSaveable { mutableStateOf(false) }
+                    var settingsPage by rememberSaveable { mutableStateOf<String?>(null) }
                     val homeState = rememberSaveableStateHolder()
 
                     if (showLangDialog) {
@@ -90,7 +91,7 @@ class MainActivity : ComponentActivity() {
                         SettingsScreen(
                             language = currentLanguage,
                             onBack = { showSettings = false },
-                            onLanguageClick = { showLangDialog = true }
+                            onLanguageClick = { showLangDialog = true }, initialPage = settingsPage
                         )
                     } else {
                         homeState.SaveableStateProvider("home") {
@@ -99,8 +100,8 @@ class MainActivity : ComponentActivity() {
                                 onMenuItemClick = { item ->
                                     when (item) {
                                         "Exit" -> finish()
-                                        "Smartwatch" -> showConnectedSmartwatches()
-                                        "Settings" -> showSettings = true
+                                        "Smartwatch" -> { settingsPage = "watches"; showSettings = true }
+                                        "Settings" -> { settingsPage = null; showSettings = true }
                                         "About" -> showAboutDialog()
                                     }
                                 }
