@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -68,31 +70,8 @@ class MainActivity : ComponentActivity() {
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var showLangDialog by remember { mutableStateOf(false) }
-                    var showSettingsDialog by remember { mutableStateOf(false) }
-
-                    if (showSettingsDialog) {
-                        androidx.compose.material3.AlertDialog(
-                            onDismissRequest = { showSettingsDialog = false },
-                            title = { Text(tr("Settings")) },
-                            text = {
-                                Column {
-                                    TextButton(onClick = {
-                                        showSettingsDialog = false
-                                        showLangDialog = true
-                                    }) { Text(tr("Select Language")) }
-                                    TextButton(onClick = {
-                                        showSettingsDialog = false
-                                        showActivityLabelSettings()
-                                    }) { Text(tr("Rename activity labels")) }
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = { showSettingsDialog = false }) {
-                                    Text(tr("Cancel"))
-                                }
-                            }
-                        )
-                    }
+                    var showSettings by rememberSaveable { mutableStateOf(false) }
+                    val homeState = rememberSaveableStateHolder()
 
                     if (showLangDialog) {
                         LanguageDialog(
@@ -107,123 +86,31 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    MainPage(
-                        language = currentLanguage,
-                        onMenuItemClick = { item ->
-                            when (item) {
-                                "Exit" -> finish()
-                                "Smartwatch" -> showConnectedSmartwatches()
-                                "Settings" -> showSettingsDialog = true
-                                "About" -> showAboutDialog()
-                            }
+                    if (showSettings) {
+                        SettingsScreen(
+                            language = currentLanguage,
+                            onBack = { showSettings = false },
+                            onLanguageClick = { showLangDialog = true }
+                        )
+                    } else {
+                        homeState.SaveableStateProvider("home") {
+                            MainPage(
+                                language = currentLanguage,
+                                onMenuItemClick = { item ->
+                                    when (item) {
+                                        "Exit" -> finish()
+                                        "Smartwatch" -> showConnectedSmartwatches()
+                                        "Settings" -> showSettings = true
+                                        "About" -> showAboutDialog()
+                                    }
+                                }
+                            )
                         }
-                    )
-
-                }
-            }
-        }
-    }
-
-    private fun showActivityLabelSettings() {
-        val professionNames = getSharedPreferences("profession_display_names", MODE_PRIVATE)
-        val options = ActivityLabels.professions
-        val names = options.map { option ->
-            professionNames.getString(option.substringBefore(" - "), null) ?: tr(option)
-        }
-        AlertDialog.Builder(this)
-            .setTitle(tr("Select a profession"))
-            .setItems(names.toTypedArray()) { _, index ->
-                showProfessionActivityLabels(options[index].substringBefore(" - "), names[index])
-            }
-            .setNegativeButton(tr("Cancel"), null)
-            .show()
-    }
-
-    private fun showProfessionActivityLabels(profession: String, professionName: String) {
-        val preferences = getSharedPreferences(ActivityLabels.PREFERENCES, MODE_PRIVATE)
-        val defaults = ActivityLabels.defaults(profession)
-        val labels = defaults.mapIndexed { index, label ->
-            preferences.getString(ActivityLabels.key(profession, index), null) ?: tr(label)
-        }
-        val options = labels + tr("Restore default labels")
-        AlertDialog.Builder(this)
-            .setTitle(professionName)
-            .setItems(options.toTypedArray()) { _, index ->
-                if (index == defaults.size) {
-                    AlertDialog.Builder(this)
-                        .setTitle(tr("Restore default labels"))
-                        .setMessage(tr("Restore the default activity labels for this profession?"))
-                        .setNegativeButton(tr("Cancel")) { _, _ ->
-                            showProfessionActivityLabels(profession, professionName)
-                        }
-                        .setPositiveButton(tr("Confirm")) { _, _ ->
-                            preferences.edit().apply {
-                                defaults.indices.forEach { remove(ActivityLabels.key(profession, it)) }
-                            }.apply()
-                            showProfessionActivityLabels(profession, professionName)
-                        }
-                        .show()
-                } else {
-                    editActivityLabel(profession, professionName, index)
-                }
-            }
-            .setNegativeButton(tr("Cancel"), null)
-            .show()
-    }
-
-    private fun editActivityLabel(profession: String, professionName: String, index: Int) {
-        val preferences = getSharedPreferences(ActivityLabels.PREFERENCES, MODE_PRIVATE)
-        val defaults = ActivityLabels.defaults(profession)
-        val key = ActivityLabels.key(profession, index)
-        val currentLabel = preferences.getString(key, null) ?: tr(defaults[index])
-        val input = android.widget.EditText(this).apply {
-            setSingleLine(true)
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setText(currentLabel)
-            selectAll()
-        }
-        val padding = (24 * resources.displayMetrics.density + 0.5f).toInt()
-        val container = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(padding, 0, padding, 0)
-            addView(input)
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(tr("Rename label"))
-            .setView(container)
-            .setNegativeButton(tr("Cancel")) { _, _ ->
-                showProfessionActivityLabels(profession, professionName)
-            }
-            .setPositiveButton(tr("Save"), null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val newLabel = input.text.toString().trim()
-                when {
-                    newLabel == currentLabel -> {
-                        dialog.dismiss()
-                        showProfessionActivityLabels(profession, professionName)
                     }
-                    newLabel.isEmpty() -> input.error = tr("Enter a label")
-                    newLabel.any { it == ',' || it == ':' || it.code == 10 || it.code == 13 } ->
-                        input.error = tr("Do not use commas or colons")
-                    defaults.indices.any { other ->
-                        if (other == index) false else {
-                            val custom = preferences.getString(ActivityLabels.key(profession, other), null)
-                            newLabel == (custom ?: defaults[other]) || newLabel == (custom ?: tr(defaults[other]))
-                        }
-                    } -> input.error = tr("This label already exists")
-                    else -> {
-                        preferences.edit().putString(key, newLabel).apply()
-                        dialog.dismiss()
-                        showProfessionActivityLabels(profession, professionName)
-                    }
+
                 }
             }
         }
-        input.requestFocus()
-        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-        dialog.show()
     }
 
     private fun showAboutDialog() {
@@ -330,8 +217,8 @@ fun LanguageDialog(
 @Composable
 fun MainPage(onMenuItemClick: (String) -> Unit, language: String = AppLanguage.ENGLISH) {
     fun tr(text: String) = AppLanguage.translate(language, text)
-    var id by remember { mutableStateOf("") }
-    var professionFull by remember { mutableStateOf("") }
+    var id by rememberSaveable { mutableStateOf("") }
+    var professionFull by rememberSaveable { mutableStateOf("") }
 
     val professions = ActivityLabels.professions
 
@@ -452,24 +339,15 @@ fun DropdownField(
     displayOption: (String) -> String = { it }
 ) {
     var expanded by remember { mutableStateOf(false) }
-    // PEMESA_PROFESSION_NAMES_V1: preserve profession identifiers when display names change.
+    // Display names are edited centrally in Settings; the selected protocol value is unchanged.
     val context = LocalContext.current
     val preferences = remember(context) {
-        context.getSharedPreferences("profession_display_names", android.content.Context.MODE_PRIVATE)
+        context.getSharedPreferences(PROFESSION_NAMES_PREFERENCES, android.content.Context.MODE_PRIVATE)
     }
-    fun code(option: String): String = option.substringBefore(" - ")
     val customNames = remember(preferences, options) {
-        mutableStateMapOf<String, String>().apply {
-            options.forEach { option ->
-                preferences.getString(code(option), null)?.let { put(option, it) }
-            }
-        }
+        options.associateWith { preferences.getString(it.substringBefore(" - "), null) }
     }
     fun displayProfession(option: String): String = customNames[option] ?: displayOption(option)
-    val french = AppLanguage.get(context) == AppLanguage.FRENCH
-    fun ui(en: String, fr: String): String = if (french) fr else en
-    var editingOption by remember { mutableStateOf<String?>(null) }
-    var draftName by remember { mutableStateOf("") }
 
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -497,19 +375,6 @@ fun DropdownField(
             options.forEach { option ->
                 DropdownMenuItem(
                     text = { Text(displayProfession(option)) },
-                    trailingIcon = {
-                        IconButton(onClick = {
-                            expanded = false
-                            draftName = displayProfession(option)
-                            editingOption = option
-                        }) {
-                            Icon(
-                                Icons.Filled.Edit,
-                                contentDescription = ui("Rename profession", "Renommer le métier") +
-                                    ": " + displayProfession(option)
-                            )
-                        }
-                    },
                     onClick = {
                         onOptionSelected(option)
                         expanded = false
@@ -517,38 +382,6 @@ fun DropdownField(
                 )
             }
         }
-    }
-
-    editingOption?.let { option ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { editingOption = null },
-            title = { Text(ui("Rename profession", "Renommer le métier")) },
-            text = {
-                OutlinedTextField(
-                    value = draftName,
-                    onValueChange = { draftName = it },
-                    label = { Text(ui("Profession name", "Nom du métier")) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = draftName.isNotBlank(),
-                    onClick = {
-                        val newName = draftName.trim()
-                        customNames[option] = newName
-                        preferences.edit().putString(code(option), newName).apply()
-                        editingOption = null
-                    }
-                ) { Text(ui("Save", "Enregistrer")) }
-            },
-            dismissButton = {
-                TextButton(onClick = { editingOption = null }) {
-                    Text(ui("Cancel", "Annuler"))
-                }
-            }
-        )
     }
 
 }
