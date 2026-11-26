@@ -1,0 +1,44 @@
+name: Apply PEMESA source corrections
+on:
+  push:
+    branches: [pemesa-improvements]
+    paths:
+      - '.github/workflows/pemesa-migration.yml'
+      - 'tools/pemesa-migration/**'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: pemesa-migration
+  cancel-in-progress: false
+jobs:
+  migrate:
+    if: github.ref == 'refs/heads/pemesa-improvements'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply source patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          for patch in ajouter_langues.py renommer_etiquettes.py moderniser_interface.py renommer_metiers.py ajouter_batterie_montre.py batterie_compacte.py verifier_communication_pemesa.py corriger_etiquetage.py ajouter_ack_pemesa.py; do
+            echo "Applying $patch"
+            python3 "tools/pemesa-migration/$patch"
+          done
+      - name: Commit only application source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -u -- app/src/main wear/src/main
+          git add app/src/main/java/com/bharathvishal/messagecommunicationusingwearabledatalayer/AppLanguage.kt
+          git diff --cached --stat
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No source changes"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Integrate PEMESA interface and wearable reliability improvements"
+          git push origin HEAD:refs/heads/pemesa-improvements
