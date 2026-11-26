@@ -648,47 +648,53 @@ class ValidationActivity : AppCompatActivity() {
     }
 
     private val activityButtonTargets = mutableMapOf<Button, Int>()
-    private val activityButtonShapes = mutableMapOf<Button, android.graphics.drawable.GradientDrawable>()
     private val activityButtonColors = mutableMapOf<Button, Int>()
     private val activityButtonAnimations = mutableMapOf<Button, android.animation.ValueAnimator>()
 
-    /** Animate the presentation after the watch confirms the selected activity. */
+    /** Render each acknowledged selection with a fresh, untinted activity background. */
     private fun styleActivityButton(button: Button, fill: Int) {
         if (activityButtonTargets[button] == fill) return
-        val previous = activityButtonColors[button] ?: uiColor("#F1F6F7")
         activityButtonAnimations.remove(button)?.cancel()
-        val shape = activityButtonShapes.getOrPut(button) {
-            uiRounded(previous, 14, uiColor("#C6D3D6")).also { drawable ->
-                button.backgroundTintList = null
-                button.background = android.graphics.drawable.RippleDrawable(
-                    android.content.res.ColorStateList.valueOf(0x22000000),
-                    drawable,
-                    uiRounded(android.graphics.Color.WHITE, 14)
-                )
-                button.setTextColor(android.content.res.ColorStateList(
-                    arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
-                    intArrayOf(uiColor("#526671"), android.graphics.Color.BLACK)
-                ))
-                button.setAllCaps(false)
-                button.minHeight = uiDp(52)
-                button.minimumHeight = uiDp(52)
-                button.setPadding(uiDp(8), uiDp(10), uiDp(8), uiDp(10))
-                button.elevation = 0f
-                button.stateListAnimator = null
-            }
-        }
+        val previous = activityButtonColors[button] ?: uiColor("#F1F6F7")
+        val shape = uiRounded(previous, 14, uiColor("#C6D3D6"))
+        val ripple = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(0x22000000),
+            shape,
+            uiRounded(android.graphics.Color.WHITE, 14)
+        )
+        button.background = ripple
+        // Clear both framework and AppCompat tints after replacing the background.
+        button.backgroundTintList = null
+        (button as? androidx.appcompat.widget.AppCompatButton)?.supportBackgroundTintList = null
+        ripple.setTintList(null)
+        val visibleShape = ripple.getDrawable(0) as android.graphics.drawable.GradientDrawable
+        visibleShape.setColor(previous)
+        button.setTextColor(android.content.res.ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(uiColor("#526671"), android.graphics.Color.BLACK)
+        ))
+        button.setAllCaps(false)
+        button.minHeight = uiDp(52)
+        button.minimumHeight = uiDp(52)
+        button.setPadding(uiDp(8), uiDp(10), uiDp(8), uiDp(10))
+        button.elevation = 0f
+        button.stateListAnimator = null
         activityButtonTargets[button] = fill
+
         if (previous == fill) {
-            shape.setColor(fill)
+            visibleShape.setColor(fill)
             activityButtonColors[button] = fill
+            button.invalidate()
             return
         }
         val animation = android.animation.ValueAnimator.ofArgb(previous, fill).apply {
             duration = 180L
             addUpdateListener {
                 val color = it.animatedValue as Int
-                shape.setColor(color)
+                visibleShape.setColor(color)
                 activityButtonColors[button] = color
+                ripple.invalidateSelf()
+                button.invalidate()
             }
         }
         activityButtonAnimations[button] = animation
