@@ -44,6 +44,8 @@ class WearableCommunicator(
     var onWatchBatteryLevel: ((Int?) -> Unit)? = null
 
     private val influxStatusPath = "/pemesa/influx-status-v1"
+    private val influxEventPath = "/pemesa/influx-event-v1"
+    private val influxOrder = InfluxStatusOrder()
     @Volatile private var influxRequestId: String? = null
     internal var onInfluxStatus: ((InfluxWriteStatus) -> Unit)? = null
 
@@ -57,15 +59,17 @@ class WearableCommunicator(
     }
 
     private fun receiveInfluxStatus(event: MessageEvent, message: String) {
-        if (listenerRegistration == null || event.sourceNodeId != lastNodeId) return
+        if (listenerRegistration == null || event.sourceNodeId != lastNodeId || event.sourceNodeId != registry.target) return
         try {
             val reply = org.json.JSONObject(message)
-            if (reply.getString("id") != influxRequestId) return
+            val solicited = event.path == influxStatusPath
+            if (solicited && reply.optString("id") != influxRequestId) return
             val status = InfluxWriteStatus(
                 reply.getString("activity"), reply.getString("wearable"),
                 reply.getLong("pending"), reply.getLong("failures")
             )
-            if (validInfluxStatus(status)) {
+            if (validInfluxStatus(status) && influxOrder.accept(event.sourceNodeId,
+                    reply.optString("stream"), reply.optLong("revision", -1L), solicited)) {
                 onInfluxStatus?.invoke(status)
             }
         } catch (error: Exception) {
@@ -234,6 +238,7 @@ class WearableCommunicator(
         // Invalidate the registration before releasing the listener.
         listenerRegistration = null
         influxRequestId = null
+        influxOrder.clear()
         pendingConnectionAck?.cancel()
         Wearable.getMessageClient(context).removeListener(this)
         Log.d("WearableListener", "📴 Listener supprimé pour les messages")
@@ -257,7 +262,7 @@ class WearableCommunicator(
                     onWatchBatteryLevel?.invoke(message.toIntOrNull()?.takeIf { it in 0..100 })
                 }
             }
-            influxStatusPath -> receiveInfluxStatus(event, message)
+            influxStatusPath, influxEventPath -> receiveInfluxStatus(event, message)
             commandAckPath -> receiveCommandAck(event, message)
             MESSAGE_ITEM_RECEIVED_PATH -> {
                 if (event.sourceNodeId == lastNodeId && event.sourceNodeId == registry.target) onMessageReceivedCallback(message)

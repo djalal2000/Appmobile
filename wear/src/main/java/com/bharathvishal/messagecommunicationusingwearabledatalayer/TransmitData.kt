@@ -18,7 +18,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import java.util.concurrent.TimeUnit
 
-class TransmissionService(private val debugLogs: Boolean = false) {
+class TransmissionService(private val debugLogs: Boolean = false, private val onStatusChanged: (JSONObject) -> Unit = {}) {
 
     private val token = "n43TH_16XPvYcoHhKqtt5-r-ZxsYwdCAE1dCnoRf3ssQimb6Pf7rFDotYiomKeHPOTolhMQ0hjhGCpCaB3wSJA=="
     private val org = "ISIS - Université Champollion"
@@ -111,6 +111,8 @@ class TransmissionService(private val debugLogs: Boolean = false) {
     }
 
     private val writeLock = Any()
+    private val statusStream = java.util.UUID.randomUUID().toString()
+    private var statusSequence = 0L
     private val activityWrites = BucketWrites()
     private val wearableWrites = BucketWrites()
     // Bound memory during outages. Independent FIFO workers preserve bucket ordering.
@@ -167,7 +169,9 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             if ((stats === wearableWrites && stats.pendingRecords + records > maxWearableRecords) ||
                 queue.trySend(data).isFailure) {
                 stats.failures++
+                val changed = stats.last != "ERROR"
                 stats.last = "ERROR"
+                if (changed) publishStatusLocked()
                 HealthJournal.add(HealthCode.QUEUE_FULL, data.size.toLong())
                 Log.e(logTag, "Write queue full or closed; submission not accepted.")
             } else {
@@ -183,20 +187,28 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             stats.pendingRecords -= records
             if (accepted != null) {
                 if (accepted && stats.last == "ERROR") HealthJournal.add(HealthCode.WRITE_RECOVERED)
+                val previous = stats.last
                 stats.last = if (accepted) "OK" else "ERROR"
                 if (!accepted) stats.failures += submissions.toLong()
+                if (previous != stats.last) publishStatusLocked()
             }
         }
     }
 
-    fun writeStatus(): JSONObject = synchronized(writeLock) {
-        JSONObject()
-            .put("activity", activityWrites.last)
-            .put("wearable", wearableWrites.last)
-            .put("pending", activityWrites.pending + wearableWrites.pending)
-            .put("failures", activityWrites.failures + wearableWrites.failures)
-            .put("pendingWearableRecords", wearableWrites.pendingRecords)
+    private fun statusLocked(): JSONObject = JSONObject()
+        .put("activity", activityWrites.last)
+        .put("wearable", wearableWrites.last)
+        .put("pending", activityWrites.pending + wearableWrites.pending)
+        .put("failures", activityWrites.failures + wearableWrites.failures)
+        .put("pendingWearableRecords", wearableWrites.pendingRecords)
+        .put("stream", statusStream).put("revision", ++statusSequence)
+
+    // Only transitions trigger a spontaneous message. Periodic polling remains a fallback.
+    private fun publishStatusLocked() {
+        runCatching { onStatusChanged(statusLocked()) }
     }
+
+    fun writeStatus(): JSONObject = synchronized(writeLock) { statusLocked() }
 
 
     /** Add optional study metadata through the same bounded activity queue, never on the UI thread. */
@@ -247,7 +259,12 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             var attempt = 0
             fun remaining(): Long = deadline - android.os.SystemClock.elapsedRealtime()
             fun markRetry(code: Long? = null) {
-                synchronized(writeLock) { stats.last = "ERROR" }
+                synchronized(writeLock) {
+                    if (stats.last != "ERROR") {
+                        stats.last = "ERROR"
+                        publishStatusLocked()
+                    }
+                }
                 HealthJournal.add(HealthCode.WRITE_RETRY, code)
             }
             while (remaining() > 0) {

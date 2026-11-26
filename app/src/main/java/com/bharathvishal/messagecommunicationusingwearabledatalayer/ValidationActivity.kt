@@ -30,18 +30,33 @@ class ValidationActivity : AppCompatActivity() {
     private val influxExpiry = Runnable { showInfluxStatus(null) }
 
     private var lastAlertFailures = 0L
+    private val influxAlerts = InfluxAlertTracker()
+    private var watchLossAlerted = false
 
     private fun optionalHapticAlert() {
         if (CollectionPreferences(this).vibration) binding.root.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
     }
 
     private fun showInfluxStatus(status: InfluxWriteStatus?) {
+        val alert = influxAlerts.update(status)
         if (status != null) {
             if (status.failures > lastAlertFailures) {
                 HealthJournal.add(HealthCode.FAILURES_REPORTED, status.failures)
-                if (isRecording) optionalHapticAlert()
+                if (isRecording && alert != InfluxAlert.LOST) optionalHapticAlert()
             }
             lastAlertFailures = status.failures
+        }
+        if (isRecording || commandUncertain) {
+            when (alert) {
+                InfluxAlert.LOST -> {
+                    optionalHapticAlert()
+                    Toast.makeText(this, commandText("InfluxDB transmission failed. Check connection and pending writes.",
+                        "Transmission InfluxDB interrompue. Vérifiez la connexion et les envois en attente."), Toast.LENGTH_LONG).show()
+                }
+                InfluxAlert.RECOVERED -> Toast.makeText(this, commandText("InfluxDB transmission restored.",
+                    "Transmission InfluxDB rétablie."), Toast.LENGTH_LONG).show()
+                InfluxAlert.NONE -> Unit
+            }
         }
         batteryUiHandler.removeCallbacks(influxExpiry)
         val text: String
@@ -61,8 +76,10 @@ class ValidationActivity : AppCompatActivity() {
                 color = "#FFB8C0"
             }
             InfluxDisplayState.PREVIOUS_FAILURES -> {
-                text = commandText("Previous write failures", "Échecs antérieurs") +
-                    " (${requireNotNull(status).failures})"
+                val previous = requireNotNull(status)
+                text = if (previous.activity == "OK" || previous.wearable == "OK")
+                    commandText("Writes restored · Previous failures", "Écritures rétablies · Échecs antérieurs") + " (${previous.failures})"
+                else commandText("Previous write failures", "Échecs antérieurs") + " (${previous.failures})"
                 color = "#FFD7A6"
             }
             InfluxDisplayState.OK -> {
@@ -170,7 +187,12 @@ class ValidationActivity : AppCompatActivity() {
                     }
                     Log.d("WearableConnection", "Watch connection: $isConnected, App open: $appOpen")
 
+                    if (wearableDeviceConnected && watchLossAlerted) {
+                        watchLossAlerted = false
+                        Toast.makeText(this@ValidationActivity, commandText("Watch connection restored.", "Connexion à la montre rétablie."), Toast.LENGTH_LONG).show()
+                    }
                     if (!wearableDeviceConnected && wasConnected && isRecording) {
+                        watchLossAlerted = true
                         optionalHapticAlert()
                         Toast.makeText(
                             this@ValidationActivity,

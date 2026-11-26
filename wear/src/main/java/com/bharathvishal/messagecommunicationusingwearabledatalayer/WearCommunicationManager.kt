@@ -33,6 +33,7 @@ class WearCommunicationManager(
         // PEMESA_WATCH_BATTERY_V1
         private const val WATCH_BATTERY_PATH = "/pemesa/watch-battery"
         private const val INFLUX_STATUS_PATH = "/pemesa/influx-status-v1"
+        private const val INFLUX_EVENT_PATH = "/pemesa/influx-event-v1"
         private const val PREFS_NAME = "watch_prefs"
         private const val SAMPLING_PERIOD_MS = 20L
         private const val SEND_INTERVAL_MS = 10000L
@@ -131,7 +132,18 @@ class WearCommunicationManager(
 
     private val transmit = TransmissionService(
         context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
-    )
+    ) { status ->
+        // Called by the writer under its lock: defer messaging, never take recordingLock here.
+        commandHandler.post {
+            val node = devicePrefs.getString("owner", null) ?: return@post
+            if (!authorized(node)) return@post
+            synchronized(recordingLock) {
+                if (pendingWearable.size > 0) status.put("pending", status.getLong("pending") + 1L)
+            }
+            Wearable.getMessageClient(context).sendMessage(node, INFLUX_EVENT_PATH,
+                status.toString().toByteArray(Charsets.UTF_8))
+        }
+    }
 
     fun close() {
         pairing.cancel(); pairDialog?.dismiss(); pairDialog = null
