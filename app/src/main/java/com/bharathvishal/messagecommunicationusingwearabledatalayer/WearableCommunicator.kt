@@ -134,6 +134,7 @@ class WearableCommunicator(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
+                HealthJournal.add(HealthCode.WATCH_TIMEOUT)
                 Log.w("WearableComm", "Connection check failed", error)
                 withContext(Dispatchers.Main) {
                     if (listenerRegistration === registration) {
@@ -191,6 +192,7 @@ class WearableCommunicator(
             val result = ack.getString("result")
             if (validCommandAck(pending.nodeId, event.sourceNodeId, result)) pending.result.complete(result)
         } catch (error: Exception) {
+            HealthJournal.add(HealthCode.INTERNAL_ERROR)
             Log.w("WearableComm", "Invalid command acknowledgement", error)
         }
     }

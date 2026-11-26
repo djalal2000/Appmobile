@@ -152,6 +152,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                 stats.pending--
                 stats.failures++
                 stats.last = "ERROR"
+                HealthJournal.add(HealthCode.QUEUE_FULL, data.size.toLong())
                 Log.e(logTag, "Write queue full or closed; submission not accepted.")
             }
         }
@@ -161,6 +162,7 @@ class TransmissionService(private val debugLogs: Boolean = false) {
         synchronized(writeLock) {
             stats.pending -= submissions.toLong()
             if (accepted != null) {
+                if (accepted && stats.last == "ERROR") HealthJournal.add(HealthCode.WRITE_RECOVERED)
                 stats.last = if (accepted) "OK" else "ERROR"
                 if (!accepted) stats.failures += submissions.toLong()
             }
@@ -237,14 +239,16 @@ class TransmissionService(private val debugLogs: Boolean = false) {
                     }
                     val retryDelay = retryDelayMs(code, retryHeader, attempt)
                     if (retryDelay != null) {
+                        HealthJournal.add(HealthCode.WRITE_RETRY, code.toLong())
                         delay(retryDelay)
                     } else {
                         accepted = false
+                        HealthJournal.add(HealthCode.WRITE_HTTP, code.toLong())
                         Log.e(logTag, "InfluxDB write rejected: $code")
                         return
                     }
                 } catch (error: IOException) {
-                    if (attempt == 0) delay(1000L) else throw error
+                    if (attempt == 0) { HealthJournal.add(HealthCode.WRITE_RETRY); delay(1000L) } else throw error
                 }
             }
         } catch (cancelled: CancellationException) {
@@ -252,7 +256,8 @@ class TransmissionService(private val debugLogs: Boolean = false) {
             throw cancelled
         } catch (error: Exception) {
             accepted = false
-            Log.e(logTag, "InfluxDB write failed", error)
+            HealthJournal.add(HealthCode.WRITE_FAILED)
+            Log.e(logTag, "InfluxDB write failed: " + error.javaClass.simpleName)
         } finally {
             finishWrite(stats, accepted, submissions)
         }

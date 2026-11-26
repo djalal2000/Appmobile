@@ -37,7 +37,10 @@ class ValidationActivity : AppCompatActivity() {
 
     private fun showInfluxStatus(status: InfluxWriteStatus?) {
         if (status != null) {
-            if (status.failures > lastAlertFailures && isRecording) optionalHapticAlert()
+            if (status.failures > lastAlertFailures) {
+                HealthJournal.add(HealthCode.FAILURES_REPORTED, status.failures)
+                if (isRecording) optionalHapticAlert()
+            }
             lastAlertFailures = status.failures
         }
         batteryUiHandler.removeCallbacks(influxExpiry)
@@ -124,6 +127,7 @@ class ValidationActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HealthJournal.add(HealthCode.APP_OPEN)
         binding = ActivityValidationBinding.inflate(layoutInflater)
         setContentView(binding.root)
         showWatchBattery(null)
@@ -154,6 +158,7 @@ class ValidationActivity : AppCompatActivity() {
                 runOnUiThread {
                     val wasConnected = wearableDeviceConnected
                     wearableDeviceConnected = isConnected && appOpen
+                    if (wasConnected != wearableDeviceConnected) HealthJournal.add(if (wearableDeviceConnected) HealthCode.WATCH_CONNECTED else HealthCode.WATCH_LOST)
                     updateConnectionStatus(isConnected, appOpen)
                     if (wearableDeviceConnected && lifecycle.currentState.isAtLeast(
                             androidx.lifecycle.Lifecycle.State.RESUMED)) {
@@ -252,6 +257,7 @@ class ValidationActivity : AppCompatActivity() {
     }
 
     private fun markCommandUncertain() {
+        HealthJournal.add(HealthCode.COMMAND_UNKNOWN)
         commandUncertain = true
         stopTimer()
         binding.startRecordingButton.isEnabled = false
@@ -306,6 +312,7 @@ class ValidationActivity : AppCompatActivity() {
                     try {
                         withContext(Dispatchers.IO) { CollectionPreferences(this@ValidationActivity).envelope(java.util.UUID.randomUUID().toString()) }
                     } catch (error: Exception) {
+                        HealthJournal.add(HealthCode.CONFIG_INVALID)
                         commandNotice("Invalid settings. Check the InfluxDB token.", "Paramètres invalides. Vérifiez le jeton InfluxDB.")
                         applyStoppedState()
                         return@launch
@@ -324,9 +331,16 @@ class ValidationActivity : AppCompatActivity() {
                             commandUncertain = false
                             binding.TirednessSeekBar.isEnabled = true
                         }
+                        when {
+                            message.contains("Action: Start") -> HealthJournal.add(HealthCode.START_OK)
+                            message == "Action: Stop" || message == "Action: Refresh" -> HealthJournal.add(HealthCode.STOP_OK)
+                            message == "Action: Pause" -> HealthJournal.add(HealthCode.PAUSE_OK)
+                            message == "Action: Resume" -> HealthJournal.add(HealthCode.RESUME_OK)
+                        }
                         onConfirmed()
                     }
                     "REJECTED", "NO_CONNECTION" -> {
+                        HealthJournal.add(HealthCode.COMMAND_REJECTED)
                         onFailure()
                         if (commandNeedsRecovery(message, result)) {
                             markCommandUncertain()

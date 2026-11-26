@@ -105,6 +105,11 @@ class WearCommunicationManager(
     private var sequence = 0L
     private var sessionEpoch = 0L
     private var sessionElapsed = 0L
+    private var segmentStart = 0L
+    private var segmentSequence = 0L
+    private var segmentEnd = 0L
+    private var lastInvalidNotice = 0L
+    private var lastReportedInvalid = false
 
     private val transmit = TransmissionService(
         context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
@@ -112,6 +117,7 @@ class WearCommunicationManager(
 
     fun close() {
         commandHandler.removeCallbacksAndMessages(null)
+        HealthJournal.add(HealthCode.STOP_OK)
         controlScope.cancel()
         stopRecording()
         transmit.close()
@@ -149,6 +155,7 @@ class WearCommunicationManager(
                     Wearable.getMessageClient(context).sendMessage(nodeId, path, payload)
                         .addOnCompleteListener {
                             if (it.isSuccessful) {
+                                if (!mobileDeviceConnected) HealthJournal.add(HealthCode.WATCH_CONNECTED)
                                 mobileDeviceConnected = true
                                 mobileNodeUri = nodeId
                             }
@@ -224,13 +231,25 @@ class WearCommunicationManager(
                         .put("battery", battery?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1)
                         .put("lowMemory", memory.lowMemory).put("freeMb", memory.availMem / 1048576L)
                         .put("writes", transmit.writeStatus())
-                    if (sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L) {
+                    if (request.optBoolean("journalOnly")) {
+                        reply.put("journalOnly", true)
+                    } else if (sensorTimer != null || startJob?.isActive == true || transmit.pendingCount() > 0L) {
                         reply.put("busy", true)
                     } else {
                         reply.put("probe", transmit.diagnose(request.optJSONObject("server")))
                     }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { reply.put("error", "WATCH") }
+                val snapshot = synchronized(recordingLock) {
+                    val end = if (segmentEnd > 0L) segmentEnd else android.os.SystemClock.elapsedRealtime()
+                    val duration = end - segmentStart
+                    val count = (sequence - segmentSequence).coerceAtLeast(0L)
+                    val hz = if (segmentStart > 0L && duration >= 3000L) count * 1000.0 / duration else null
+                    org.json.JSONObject().put("running", sensorTimer != null && !stop).put("paused", paused)
+                        .put("samples", sequence).put("targetHz", 1000L / samplingPeriodMs)
+                        .put("observedHz", hz ?: org.json.JSONObject.NULL)
+                }
+                reply.put("acquisition", snapshot).put("journal", HealthJournal.snapshot().toHealthJson())
                 Wearable.getMessageClient(context).sendMessage(node, "/pemesa/diagnostics-v1",
                     reply.toString().toByteArray(StandardCharsets.UTF_8))
             }
@@ -274,6 +293,7 @@ class WearCommunicationManager(
                         val interval = config.optInt("interval", 10)
                         if (!validAcquisition(hz, interval) || !validSensorSelection(keys) || runCatching { UUID.fromString(session) }.isFailure ||
                             !transmit.prepare(config.optJSONObject("server"))) {
+                            HealthJournal.add(HealthCode.PREFLIGHT_FAILED)
                             reply("REJECTED")
                             return@launch
                         }
@@ -311,6 +331,7 @@ class WearCommunicationManager(
             val fatigueMatches = fatigue?.let { sharedPref.getString("Fatigue Level", null) == it } ?: true
             if (stateMatches && labelMatches && fatigueMatches) "OK" else "UNKNOWN"
         } catch (error: Exception) {
+            HealthJournal.add(HealthCode.INTERNAL_ERROR)
             Log.e(TAG, "Command execution failed", error)
             "UNKNOWN"
         }
@@ -342,6 +363,7 @@ class WearCommunicationManager(
                     .apply()
                 updateUI("📡 Start recording...")
                 startRecording()
+                HealthJournal.add(HealthCode.START_OK)
                 // Record the declared baseline even when it matches the stored value.
                 if ("fatigue" in enabledSensors) transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
                 transmit.transmitSession(sessionId ?: "", personID ?: "unknown", studyMetadata,
@@ -350,16 +372,19 @@ class WearCommunicationManager(
 
             "Stop" -> {
                 stopRecording()
+                HealthJournal.add(HealthCode.STOP_OK)
                 updateUI("⛔ Recording finished !")
             }
 
             "Pause" -> {
-                synchronized(recordingLock) { paused = true; lastStepCount = null; freshSensors.clear() }
+                synchronized(recordingLock) { if (!paused) segmentEnd = android.os.SystemClock.elapsedRealtime(); paused = true; lastStepCount = null; freshSensors.clear() }
+                HealthJournal.add(HealthCode.PAUSE_OK)
                 updateUI("⏸️ En pause.")
             }
 
             "Resume" -> {
-                synchronized(recordingLock) { paused = false; lastStepCount = null; freshSensors.clear(); hvalue = "0"; lastLightLux = -1f }
+                synchronized(recordingLock) { if (paused) { segmentStart = android.os.SystemClock.elapsedRealtime(); segmentSequence = sequence; segmentEnd = 0L }; paused = false; lastStepCount = null; freshSensors.clear(); hvalue = "0"; lastLightLux = -1f }
+                HealthJournal.add(HealthCode.RESUME_OK)
                 updateUI("▶ Recording in progress...")
             }
 
@@ -451,9 +476,11 @@ class WearCommunicationManager(
             sensor?.let {
                 try {
                     if (!sensorManager.registerListener(sensorListener, it, samplingPeriodUs)) {
+                        HealthJournal.add(HealthCode.SENSOR_REGISTER_FAILED, it.type.toLong())
                         Log.w(TAG, "Sensor registration failed: ${it.type}")
                     } else availableSensors.add(it.type)
                 } catch (error: SecurityException) {
+                    HealthJournal.add(HealthCode.SENSOR_PERMISSION, it.type.toLong())
                     Log.w(TAG, "Sensor permission unavailable: ${it.type}", error)
                 }
             }
@@ -468,7 +495,14 @@ class WearCommunicationManager(
                     Sensor.TYPE_LINEAR_ACCELERATION, Sensor.TYPE_ROTATION_VECTOR -> 3
                     else -> 1
                 }
-                if (it.values.size < required || it.values.take(required).any { value -> !value.isFinite() }) return
+                if (it.values.size < required || it.values.take(required).any { value -> !value.isFinite() }) {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (!lastReportedInvalid || now - lastInvalidNotice >= 10000L) {
+                        lastReportedInvalid = true; lastInvalidNotice = now
+                        HealthJournal.add(HealthCode.SENSOR_INVALID, it.sensor.type.toLong())
+                    }
+                    return
+                }
                 synchronized(recordingLock) {
                 if (stop || paused || it.sensor.type !in availableSensors) return
                 freshSensors.add(it.sensor.type)
@@ -591,6 +625,8 @@ class WearCommunicationManager(
             sequence = 0L
             sessionEpoch = System.currentTimeMillis()
             sessionElapsed = android.os.SystemClock.elapsedRealtime()
+            segmentStart = sessionElapsed; segmentSequence = 0L; segmentEnd = 0L
+            lastInvalidNotice = 0L; lastReportedInvalid = false
             if (sessionId == null) sessionId = UUID.randomUUID().toString()
             try {
                 setupSensors()
@@ -647,6 +683,7 @@ class WearCommunicationManager(
 
     private fun stopRecording() {
         synchronized(recordingLock) {
+            if (!stop && segmentEnd == 0L) segmentEnd = android.os.SystemClock.elapsedRealtime()
             stop = true; paused = false
             recordingGeneration++
             sensorTimer?.cancel(); sensorTimer = null

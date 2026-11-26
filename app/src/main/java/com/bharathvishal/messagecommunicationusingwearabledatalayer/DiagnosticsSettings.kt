@@ -20,8 +20,8 @@ import java.util.concurrent.TimeUnit
 
 internal data class DiagnosticResult(val code: String, val detail: JSONObject? = null, val roundTripMs: Long = 0)
 
-private suspend fun runDiagnostics(context: Context): DiagnosticResult = withContext(Dispatchers.IO) {
-    val configuration = try { CollectionPreferences(context).envelope(UUID.randomUUID().toString()) }
+internal suspend fun runDiagnostics(context: Context, journalOnly: Boolean = false): DiagnosticResult = withContext(Dispatchers.IO) {
+    val configuration = try { if (journalOnly) JSONObject() else CollectionPreferences(context).envelope(UUID.randomUUID().toString()) }
         catch (_: Exception) { return@withContext DiagnosticResult("CONFIG") }
     val id = UUID.randomUUID().toString()
     val client = Wearable.getMessageClient(context)
@@ -38,7 +38,7 @@ private suspend fun runDiagnostics(context: Context): DiagnosticResult = withCon
     }
     try {
         Tasks.await(client.addListener(listener), 7, TimeUnit.SECONDS)
-        val request = JSONObject().put("id", id)
+        val request = JSONObject().put("id", id).put("journalOnly", journalOnly)
         configuration.optJSONObject("server")?.let { request.put("server", it) }
         val start = android.os.SystemClock.elapsedRealtime()
         Tasks.await(client.sendMessage(node.id, "/pemesa/diagnostics-v1", request.toString().toByteArray(Charsets.UTF_8)), 7, TimeUnit.SECONDS)
@@ -70,14 +70,17 @@ internal fun DiagnosticsSettings(language: String, onNavigate: (String) -> Unit)
         if (busy) return
         busy = true
         scope.launch {
-            try { result = runDiagnostics(context) }
+            try {
+                result = runDiagnostics(context)
+                HealthJournal.add(if (result?.code == "OK" && result?.detail?.optString("error").isNullOrBlank()) HealthCode.DIAGNOSTIC_OK else HealthCode.DIAGNOSTIC_FAILED)
+            }
             finally { busy = false }
         }
     }
     fun system(action: String) { runCatching { context.startActivity(Intent(action)) } }
     Text(t("Run a manual, read-only check from the watch. No sensors are started and no measurement points are written.",
         "Lancez un contrôle manuel depuis la montre. Aucun capteur n’est démarré et aucun point de mesure n’est écrit."))
-    Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = ::run) { Text(t("Run diagnostics", "Lancer le diagnostic")) }
+    Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = ::run) { Text(t("Analyze application", "Analyser l’application")) }
     if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
     val report = result
     if (report != null) {
@@ -131,9 +134,18 @@ internal fun DiagnosticsSettings(language: String, onNavigate: (String) -> Unit)
             json.optJSONObject("writes")?.let { stats ->
                 DiagnosticCard(t("Transmission statistics", "Statistiques des transmissions"), t("Pending: ", "En attente : ") + stats.optLong("pending") + t(" · Failed: ", " · Échecs : ") + stats.optLong("failures"))
             }
-            Text(t("Actual sampling rate requires a real recording; this test does not start one.", "La fréquence réelle nécessite une acquisition ; ce diagnostic n’en démarre aucune."), style = MaterialTheme.typography.bodySmall)
+            json.optJSONObject("acquisition")?.let { acquisition ->
+                val hz = acquisition.optDouble("observedHz", Double.NaN)
+                DiagnosticCard(t("Observed sampling", "Échantillonnage observé"),
+                    t("Target: ", "Cible : ") + acquisition.optLong("targetHz") + " Hz · " +
+                        t("Samples: ", "Échantillons : ") + acquisition.optLong("samples") + "\n" +
+                        if (hz.isFinite()) t("Observed timer rate: ", "Fréquence observée du timer : ") + String.format(java.util.Locale.ROOT, "%.1f Hz", hz)
+                        else t("Not measured yet (minimum 3 seconds).", "Non mesurée (minimum 3 secondes)."))
+            }
+            Text(t("Timer rate is not the hardware sensor frequency. No recording is started by this test.", "La fréquence du timer ne correspond pas à celle des capteurs matériels. Ce test ne démarre aucune acquisition."), style = MaterialTheme.typography.bodySmall)
         }
     }
+    HealthJournalPanel(language, result, busy, onNavigate)
 }
 
 @Composable
