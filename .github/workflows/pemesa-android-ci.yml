@@ -23,10 +23,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Set up Android command-line tools
         uses: android-actions/setup-android@v3
-      - name: Prepare Android SDK
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;35.0.0'
+          log-accepted-android-sdk-licenses: 'false'
+      - name: Prepare Gradle wrapper
         run: |
           rm -f local.properties app/local.properties wear/local.properties
-          sdkmanager "platforms;android-36" "build-tools;35.0.0"
           chmod +x gradlew
       - name: Compile and run JVM tests for both modules
         run: ./gradlew --no-daemon :app:assembleDebug :wear:assembleDebug :app:testDebugUnitTest :wear:testDebugUnitTest
