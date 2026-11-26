@@ -92,8 +92,17 @@ internal class CollectionPreferences(context: Context) {
 
     private fun historyJson(): JSONObject = runCatching {
         val encoded = prefs.getString("server_history", null) ?: return JSONObject()
-        JSONObject(decryptValue(encoded))
+        val json = JSONObject(decryptValue(encoded))
+        if (json.has("tokens")) {
+            json.remove("tokens")
+            check(prefs.edit().putString("server_history", encrypt(json.toString())).commit())
+        }
+        json
     }.getOrDefault(JSONObject())
+
+    fun removeLegacyTokenHistory() {
+        synchronized(configLock) { historyJson() }
+    }
 
     private fun historyField(json: JSONObject, name: String): List<String> {
         val array = json.optJSONArray(name) ?: return emptyList()
@@ -102,39 +111,22 @@ internal class CollectionPreferences(context: Context) {
         }.distinct()
     }
 
-    private fun historyTokens(json: JSONObject): List<PreviousServerToken> {
-        val array = json.optJSONArray("tokens") ?: return emptyList()
-        return (0 until minOf(array.length(), SERVER_HISTORY_LIMIT)).mapNotNull { index ->
-            runCatching {
-                val item = array.getJSONObject(index)
-                PreviousServerToken(item.getString("id"),
-                    ServerTarget(item.getString("url"), item.getString("org"),
-                        item.getString("activity"), item.getString("wearable")),
-                    item.getString("value"))
-            }.getOrNull()
-        }
-    }
-
     fun serverHistory(): ServerHistorySuggestions = synchronized(configLock) {
         val json = historyJson()
-        ServerHistorySuggestions(SERVER_HISTORY_FIELDS.associateWith { historyField(json, it) },
-            historyTokens(json).map { PreviousTokenChoice(it.id, it.target) })
+        ServerHistorySuggestions(SERVER_HISTORY_FIELDS.associateWith { historyField(json, it) })
     }
 
     fun clearServerHistory(): Boolean = synchronized(configLock) {
         prefs.edit().remove("server_history").commit()
     }
 
-    fun saveServer(url: String, org: String, activity: String, wearable: String, token: String,
-                   previousTokenId: String? = null): Boolean = synchronized(configLock) { runCatching {
+    fun saveServer(url: String, org: String, activity: String, wearable: String, token: String): Boolean = synchronized(configLock) { runCatching {
         require(validServerUrl(url) && org.isNotBlank() && activity.isNotBlank() && wearable.isNotBlank() && activity != wearable)
         val target = ServerTarget(url, org, activity, wearable)
         val oldTarget = activeTarget().takeIf { custom }
         val oldToken = if (hasToken) runCatching { decrypt() }.getOrNull() else null
         val history = historyJson()
-        val tokens = historyTokens(history)
         val selected = when {
-            previousTokenId != null -> requireNotNull(chooseServerToken(tokens, previousTokenId, target))
             token.isNotBlank() -> token
             oldTarget == target -> requireNotNull(oldToken)
             else -> error("A token is required for a different destination.")
@@ -145,14 +137,6 @@ internal class CollectionPreferences(context: Context) {
             updated.put(field, JSONArray(previousFieldValues(historyField(history, field),
                 oldTarget?.fields()?.get(index), target.fields()[index])))
         }
-        val priorToken = if (oldTarget != null && !oldToken.isNullOrBlank())
-            PreviousServerToken(java.util.UUID.randomUUID().toString(), oldTarget, oldToken) else null
-        updated.put("tokens", JSONArray().apply {
-            previousTokens(tokens, priorToken, target, selected).forEach { entry ->
-                put(JSONObject().put("id", entry.id).put("url", entry.target.url).put("org", entry.target.org)
-                    .put("activity", entry.target.activity).put("wearable", entry.target.wearable).put("value", entry.value))
-            }
-        })
         prefs.edit().putBoolean("custom", true).putString("url", url).putString("org", org)
             .putString("activity", activity).putString("wearable", wearable).putString("token", encrypt(selected))
             .putString("server_history", encrypt(updated.toString()))

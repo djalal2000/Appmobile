@@ -56,7 +56,7 @@ internal fun StorageSettings(language: String) {
         val history = selected == "history"
         AlertDialog(onDismissRequest = { action = null },
             title = { Text(if (history) t("Clear InfluxDB history?", "Effacer l’historique InfluxDB ?") else t("Clear phone cache?", "Vider le cache du téléphone ?")) },
-            text = { Text(if (history) t("Remove previous values and tokens. Keep the active configuration.", "Supprimer les anciennes valeurs et jetons. Conserver la configuration active.")
+            text = { Text(if (history) t("Remove previous values. Keep the active configuration.", "Supprimer les anciennes valeurs. Conserver la configuration active.")
                 else t("Remove temporary cache files only. Recording buffers and the technical journal are not affected.", "Supprimer uniquement les fichiers temporaires. Les tampons de collecte et le journal technique ne sont pas affectés.")) },
             confirmButton = { TextButton(onClick = {
                 action = null; busy = true

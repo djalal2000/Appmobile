@@ -9,5 +9,6 @@ class MyApplication : Application() {
 
         // Apply dynamic colors on Android 12 and later.
         DynamicColors.applyToActivitiesIfAvailable(this)
+        Thread { CollectionPreferences(this).removeLegacyTokenHistory() }.start()
     }
 }
