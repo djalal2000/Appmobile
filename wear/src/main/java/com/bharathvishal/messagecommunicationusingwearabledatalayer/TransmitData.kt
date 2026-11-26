@@ -44,85 +44,108 @@ class TransmissionService {
 
     private val influxService = retrofit.create(InfluxService::class.java)
 
-    fun transmitData(data: List<Data>) {
-        CoroutineScope(Dispatchers.IO).launch {
-            val lineProtocol = data.mapNotNull { original ->
-                val inertialLine = original.toLineProtocol()
-                val activityLine = original.toLineProtocolActivity()
-                listOf(inertialLine, activityLine).filter { it.isNotBlank() }
-            }.flatten().joinToString("\n")
+    private class BucketWrites {
+        var pending = 0L
+        var failures = 0L
+        var last = "NONE"
+    }
 
-            if (lineProtocol.isBlank()) return@launch
+    private val writeLock = Any()
+    private val activityWrites = BucketWrites()
+    private val wearableWrites = BucketWrites()
 
-            val mediaType = "text/plain".toMediaType()
-            val requestBody = lineProtocol.toRequestBody(mediaType)
+    private fun beginWrite(stats: BucketWrites) = synchronized(writeLock) {
+        stats.pending++
+    }
 
-            try {
-                Log.d("LineProtocol", "➡️ $lineProtocol")
-
-                val response = influxService.sendLineProtocol(
-                    org = org,
-                    bucket = bucketActivity,
-                    precision = "ms",
-                    body = requestBody
-                )
-
-                Log.d("InfluxDB", "Response code: ${response.code()}")
-                Log.d("InfluxDB", "Response message: ${response.message()}")
-                Log.d("InfluxDB", "Response isSuccessful: ${response.isSuccessful}")
-
-                if (response.isSuccessful) {
-                    Log.d("InfluxDB", "✅ Données envoyées avec succès à InfluxDB.")
-                } else {
-                    Log.e("InfluxDB", "❌ Erreur InfluxDB: ${response.code()} - ${response.message()}")
-                }
-            } catch (e: Exception) {
-                Log.e("InfluxDB", "❌ Exception réseau: ${e.localizedMessage}", e)
-                e.printStackTrace()
+    private fun finishWrite(stats: BucketWrites, accepted: Boolean?) {
+        synchronized(writeLock) {
+            stats.pending--
+            if (accepted != null) {
+                stats.last = if (accepted) "OK" else "ERROR"
+                if (!accepted) stats.failures++
             }
+        }
+    }
 
-            transmitWearableData(data)
+    /** Report completed HTTP writes independently of the wearable control channel. */
+    fun writeStatus(): org.json.JSONObject = synchronized(writeLock) {
+        org.json.JSONObject()
+            .put("activity", activityWrites.last)
+            .put("wearable", wearableWrites.last)
+            .put("pending", activityWrites.pending + wearableWrites.pending)
+            .put("failures", activityWrites.failures + wearableWrites.failures)
+    }
+
+    fun transmitData(data: List<Data>) {
+        if (data.isEmpty()) return
+        // Register both scheduled writes before the asynchronous work starts.
+        synchronized(writeLock) {
+            activityWrites.pending++
+            wearableWrites.pending++
+        }
+        CoroutineScope(Dispatchers.IO).launch {
+            writeBucket(bucketActivity, activityWrites, "InfluxDB", "LineProtocol") {
+                data.flatMap { sample ->
+                    listOf(sample.toLineProtocol(), sample.toLineProtocolActivity())
+                        .filter { it.isNotBlank() }
+                }.joinToString("\n")
+            }
+            writeBucket(bucketWearable, wearableWrites, "InfluxDB_Wearable", "LineProtocolWearable") {
+                wearableLines(data)
+            }
         }
     }
 
     fun transmitWearableData(data: List<Data>) {
-        Log.d("DEBUG", "🔁 transmitWearableData called with: ${data.size} elements")
-
+        if (data.isEmpty()) return
+        beginWrite(wearableWrites)
         CoroutineScope(Dispatchers.IO).launch {
-            val lineProtocol = data.mapNotNull { original ->
-                val wearableLine = original.toLineProtocolWearable()
-                if (wearableLine.isBlank()) null else wearableLine
-            }.joinToString("\n")
-
-            if (lineProtocol.isBlank()) return@launch
-
-            val mediaType = "text/plain".toMediaType()
-            val requestBody = lineProtocol.toRequestBody(mediaType)
-
-            try {
-                Log.d("LineProtocolWearable", "➡️ $lineProtocol")
-
-                val response = influxService.sendLineProtocol(
-                    org = org,
-                    bucket = bucketWearable,
-                    precision = "ms",
-                    body = requestBody
-                )
-
-                Log.d("InfluxDB_Wearable", "Response code: ${response.code()}")
-                Log.d("InfluxDB_Wearable", "Response message: ${response.message()}")
-                Log.d("InfluxDB_Wearable", "Response isSuccessful: ${response.isSuccessful}")
-
-                if (response.isSuccessful) {
-                    Log.d("InfluxDB_Wearable", "✅ Données envoyées avec succès au bucket wearable.")
-                } else {
-                    Log.e("InfluxDB_Wearable", "❌ Erreur InfluxDB: ${response.code()} - ${response.message()}")
-                }
-            } catch (e: Exception) {
-                Log.e("InfluxDB_Wearable", "❌ Exception réseau: ${e.localizedMessage}", e)
-                e.printStackTrace()
+            writeBucket(bucketWearable, wearableWrites, "InfluxDB_Wearable", "LineProtocolWearable") {
+                wearableLines(data)
             }
         }
     }
 
+    private fun wearableLines(data: List<Data>): String =
+        data.map { it.toLineProtocolWearable() }.filter { it.isNotBlank() }.joinToString("\n")
+
+    private suspend fun writeBucket(
+        bucket: String,
+        stats: BucketWrites,
+        logTag: String,
+        lineTag: String,
+        buildLines: () -> String
+    ) {
+        var accepted: Boolean? = null
+        try {
+            val lineProtocol = buildLines()
+            if (lineProtocol.isBlank()) return
+
+            val requestBody = lineProtocol.toRequestBody("text/plain".toMediaType())
+            Log.d(lineTag, "➡️ $lineProtocol")
+            val response = influxService.sendLineProtocol(
+                org = org,
+                bucket = bucket,
+                precision = "ms",
+                body = requestBody
+            )
+            accepted = response.isSuccessful
+            Log.d(logTag, "Response code: ${response.code()}")
+            Log.d(logTag, "Response message: ${response.message()}")
+            Log.d(logTag, "Response isSuccessful: ${response.isSuccessful}")
+            if (response.isSuccessful) {
+                Log.d(logTag, "Write accepted by InfluxDB.")
+            } else {
+                Log.e(logTag, "InfluxDB write rejected: ${response.code()} - ${response.message()}")
+            }
+            response.body()?.close()
+            response.errorBody()?.close()
+        } catch (error: Exception) {
+            accepted = false
+            Log.e(logTag, "InfluxDB write failed", error)
+        } finally {
+            finishWrite(stats, accepted)
+        }
+    }
 }

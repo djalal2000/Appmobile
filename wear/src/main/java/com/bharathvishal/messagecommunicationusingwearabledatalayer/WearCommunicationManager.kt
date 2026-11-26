@@ -31,6 +31,7 @@ class WearCommunicationManager(
         private const val MESSAGE_ITEM_RECEIVED_PATH = "/message-item-received"
         // PEMESA_WATCH_BATTERY_V1
         private const val WATCH_BATTERY_PATH = "/pemesa/watch-battery"
+        private const val INFLUX_STATUS_PATH = "/pemesa/influx-status-v1"
         private const val PREFS_NAME = "watch_prefs"
         private const val SAMPLING_PERIOD_MS = 20L
         private const val SEND_INTERVAL_MS = 10000L
@@ -82,11 +83,15 @@ class WearCommunicationManager(
     private var zRot = 0f
     private var wRot = 0f
     private var stepCount = 0
-    private var lastStepCount = 0
+    private var lastStepCount: Int? = null
 
     @Volatile private var stop = false
     @Volatile private var paused = false
     private var sensorTimer: Timer? = null
+    private val recordingLock = Any()
+    private val bufferSize = (SEND_INTERVAL_MS / SAMPLING_PERIOD_MS).toInt()
+    private val pendingSamples = ArrayList<Data>(bufferSize)
+    private var recordingGeneration = 0L
 
     private val transmit = TransmissionService()
 
@@ -142,6 +147,17 @@ class WearCommunicationManager(
                             .addOnFailureListener { error ->
                                 Log.w(TAG, "Watch battery reply failed", error)
                             }
+                    }
+                }
+
+                INFLUX_STATUS_PATH -> {
+                    if (messageStr.length == 36 &&
+                        runCatching { UUID.fromString(messageStr) }.isSuccess) {
+                        val snapshot = transmit.writeStatus().put("id", messageStr)
+                        Wearable.getMessageClient(context)
+                            .sendMessage(messageEvent.sourceNodeId, INFLUX_STATUS_PATH,
+                                snapshot.toString().toByteArray(StandardCharsets.UTF_8))
+                            .addOnFailureListener { error -> Log.w(TAG, "InfluxDB status reply failed", error) }
                     }
                 }
 
@@ -236,7 +252,7 @@ class WearCommunicationManager(
         when (action) {
             "Start" -> {
                 stepCount = 0
-                lastStepCount = 0
+                lastStepCount = null
                 sharedPref.edit()
                     .putString("personID", personID ?: "unknown")
                     .putString("userProfession", userProfession ?: "unknown")
@@ -245,6 +261,8 @@ class WearCommunicationManager(
                     .apply()
                 updateUI("📡 Start recording...")
                 startRecording()
+                // Record the declared baseline even when it matches the stored value.
+                transmitSensorData(fatigueLevel = fatigueLevel ?: "0")
             }
 
             "Stop" -> {
@@ -383,16 +401,22 @@ class WearCommunicationManager(
 
                     Sensor.TYPE_STEP_COUNTER -> {
                         val totalSteps = it.values[0].toInt()
-                        if (lastStepCount == 0 && stepCount == 0) {
+                        val previousCount = lastStepCount
+                        if (previousCount == null) {
+                            // Establish the session baseline from an actual sensor event.
                             lastStepCount = totalSteps
                             stepCount = 0
+                            transmitSensorData(steps = stepCount)
                         } else {
-                            val newSteps = totalSteps - lastStepCount
+                            val newSteps = totalSteps - previousCount
                             if (newSteps > 0) {
                                 stepCount += newSteps
                                 lastStepCount = totalSteps
                                 transmitSensorData(steps = stepCount)
                                 updateUI()
+                            } else if (newSteps < 0) {
+                                // Re-establish the baseline if the hardware counter resets.
+                                lastStepCount = totalSteps
                             }
                         }
                         Log.d(TAG, "👣 Step counter: total=$totalSteps, depuis début=$stepCount")
@@ -457,65 +481,75 @@ class WearCommunicationManager(
             bpm = bpm,
             light = light,
             pressure = pressure,
-            steps = steps ?: 0,
+            steps = steps,
             fatigueLevel = fatigueLevel
         )
         transmit.transmitWearableData(listOf(data))
     }
 
     private fun startRecording() {
-        stop = false; paused = false
-        setupSensors()
-        val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
+        synchronized(recordingLock) {
+            stop = false; paused = false
+            setupSensors()
+            val personID = sharedPref.getString("personID", "unknown") ?: "unknown"
+            val generation = ++recordingGeneration
+            pendingSamples.clear()
 
-        val dataSet = mutableListOf<Data>()
-        var i = 0
-        val bufferSize = (SEND_INTERVAL_MS / SAMPLING_PERIOD_MS).toInt()
-
-        sensorTimer = fixedRateTimer("sensorTimer", true, 100, SAMPLING_PERIOD_MS) {
-            val currentActivity = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
-            if (!stop && !paused) {
-                val data = Data(
-                    person_id = personID,
-                    acceX = xaccel,
-                    acceY = yaccel,
-                    acceZ = zaccel,
-                    gyroX = xgyro,
-                    gyroY = ygyro,
-                    gyroZ = zgyro,
-                    gravityX = xGravity,
-                    gravityY = yGravity,
-                    gravityZ = zGravity,
-                    linAccX = xLinAcc,
-                    linAccY = yLinAcc,
-                    linAccZ = zLinAcc,
-                    rotX = xRot,
-                    rotY = yRot,
-                    rotZ = zRot,
-                    rotW = wRot,
-                    label = currentActivity,
-                    pressure = pressureHpa
-                )
-
-                if (dataSet.size < bufferSize) dataSet.add(data) else dataSet[i] = data
-
-                if (i == bufferSize - 1) {
-                    // Preserve the activity label assigned at acquisition time.
-                    transmit.transmitData(dataSet.toList())
-                    i = 0
-                } else i++
+            sensorTimer = fixedRateTimer("sensorTimer", true, 100, SAMPLING_PERIOD_MS) {
+                synchronized(recordingLock) {
+                    if (generation == recordingGeneration && !stop && !paused) {
+                        val currentActivity = sharedPref.getString("userActivity", "Unlabeled activity") ?: "Unlabeled activity"
+                        val data = Data(
+                            person_id = personID,
+                            acceX = xaccel,
+                            acceY = yaccel,
+                            acceZ = zaccel,
+                            gyroX = xgyro,
+                            gyroY = ygyro,
+                            gyroZ = zgyro,
+                            gravityX = xGravity,
+                            gravityY = yGravity,
+                            gravityZ = zGravity,
+                            linAccX = xLinAcc,
+                            linAccY = yLinAcc,
+                            linAccZ = zLinAcc,
+                            rotX = xRot,
+                            rotY = yRot,
+                            rotZ = zRot,
+                            rotW = wRot,
+                            label = currentActivity,
+                            pressure = pressureHpa
+                        )
+                        pendingSamples.add(data)
+                        if (pendingSamples.size >= bufferSize) {
+                            submitPendingSamples()
+                        }
+                    }
+                }
             }
         }
     }
 
+    // Called under recordingLock; the submitted list is independent of subsequent samples.
+    private fun submitPendingSamples() {
+        if (pendingSamples.isEmpty()) return
+        transmit.transmitData(pendingSamples.toList())
+        pendingSamples.clear()
+    }
+
     private fun stopRecording() {
-        stop = true; paused = false
-        sensorTimer?.cancel(); sensorTimer = null
+        synchronized(recordingLock) {
+            stop = true; paused = false
+            recordingGeneration++
+            sensorTimer?.cancel(); sensorTimer = null
+            // Submit the partial batch before acknowledging the stop command.
+            submitPendingSamples()
+        }
         // Refresh or stop may arrive before the first recording starts.
         if (::sensorManager.isInitialized) {
             sensorManager.unregisterListener(sensorListener)
         }
-        lastStepCount = 0
+        lastStepCount = null
         lastLightLux = -1f
     }
 }

@@ -27,6 +27,55 @@ class ValidationActivity : AppCompatActivity() {
     // PEMESA_WATCH_BATTERY_V1
     private val batteryUiHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val batteryExpiry = Runnable { showWatchBattery(null) }
+    private val influxExpiry = Runnable { showInfluxStatus(null) }
+
+    private fun showInfluxStatus(status: InfluxWriteStatus?) {
+        batteryUiHandler.removeCallbacks(influxExpiry)
+        val text: String
+        val color: String
+        when {
+            status == null -> {
+                text = commandText("InfluxDB: status unavailable", "InfluxDB : état indisponible")
+                color = "#526671"
+            }
+            status.activity == "ERROR" || status.wearable == "ERROR" -> {
+                val buckets = listOfNotNull(
+                    "activity".takeIf { status.activity == "ERROR" },
+                    "wearable".takeIf { status.wearable == "ERROR" }
+                ).joinToString(", ")
+                text = commandText("InfluxDB: write failed", "InfluxDB : échec d’écriture") + " ($buckets)"
+                color = "#B32636"
+            }
+            status.failures > 0 -> {
+                text = commandText("InfluxDB: previous write failures", "InfluxDB : échecs antérieurs") +
+                    " (${status.failures})"
+                color = "#865000"
+            }
+            status.activity == "OK" && status.wearable == "OK" -> {
+                text = commandText("InfluxDB: last writes OK", "InfluxDB : dernières écritures OK")
+                color = "#096B45"
+            }
+            status.pending > 0 || status.activity == "OK" || status.wearable == "OK" -> {
+                text = commandText("InfluxDB: awaiting write confirmation", "InfluxDB : confirmation en attente")
+                color = "#865000"
+            }
+            else -> {
+                text = commandText("InfluxDB: no writes yet", "InfluxDB : aucune écriture")
+                color = "#526671"
+            }
+        }
+        val pending = status?.pending ?: 0L
+        binding.influxStatusTv.text = if (pending > 0) {
+            "$text · " + commandText("$pending pending", "$pending en attente")
+        } else text
+        binding.influxStatusTv.setTextColor(android.graphics.Color.parseColor(color))
+        binding.influxStatusTv.contentDescription = binding.influxStatusTv.text.toString() +
+            if (status != null && status.failures > 0) {
+                commandText(". Failed writes since watch app launch: ${status.failures}",
+                    ". Échecs depuis le lancement de la montre : ${status.failures}")
+            } else ""
+        if (status != null) batteryUiHandler.postDelayed(influxExpiry, 25000L)
+    }
 
     private fun showWatchBattery(level: Int?) {
         batteryUiHandler.removeCallbacks(batteryExpiry)
@@ -67,6 +116,7 @@ class ValidationActivity : AppCompatActivity() {
         binding = ActivityValidationBinding.inflate(layoutInflater)
         setContentView(binding.root)
         showWatchBattery(null)
+        showInfluxStatus(null)
 
         binding.deviceconnectionStatusTv.text = localized("Connection status")
         binding.startRecordingButton.text = localized("Start Recording")
@@ -96,8 +146,10 @@ class ValidationActivity : AppCompatActivity() {
                     if (wearableDeviceConnected && lifecycle.currentState.isAtLeast(
                             androidx.lifecycle.Lifecycle.State.RESUMED)) {
                         communicator.requestWatchBattery()
+                        communicator.requestInfluxStatus()
                     } else {
                         showWatchBattery(null)
+                        showInfluxStatus(null)
                     }
                     Log.d("WearableConnection", "Watch connection: $isConnected, App open: $appOpen")
 
@@ -122,6 +174,15 @@ class ValidationActivity : AppCompatActivity() {
             }
         }
 
+
+        communicator.onInfluxStatus = { status ->
+            runOnUiThread {
+                if (wearableDeviceConnected && lifecycle.currentState.isAtLeast(
+                        androidx.lifecycle.Lifecycle.State.RESUMED)) {
+                    showInfluxStatus(status)
+                }
+            }
+        }
 
         binding.stopRecordingButton.isEnabled = false
         updateActivityButtonColor()
@@ -157,6 +218,7 @@ class ValidationActivity : AppCompatActivity() {
         connectionMonitorJob = null
         communicator.unregisterListeners()
         showWatchBattery(null)
+        showInfluxStatus(null)
         super.onPause()
         stopTimer()
     }

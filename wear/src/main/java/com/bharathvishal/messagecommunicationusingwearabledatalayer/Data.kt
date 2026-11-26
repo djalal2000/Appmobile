@@ -41,7 +41,7 @@ data class Data(
     val bpm: String? = null,
     val label: String? = null,
     val fatigueLevel: String? = null,
-    val steps: Int = 0,
+    val steps: Int? = null,
     val light: Float? = null,
     val pressure: Float? = null
 ) {
@@ -107,7 +107,8 @@ data class Data(
             lines.add("fatigue_level,person_id=$safePersonId fatigue_level=$it $timestampMs")
         }
 
-        if (steps >= 0) {
+        // A missing step-counter reading is not a zero-step measurement.
+        if (steps != null && steps >= 0) {
             lines.add("steps,person_id=$safePersonId steps=$steps $timestampMs")
         }
 

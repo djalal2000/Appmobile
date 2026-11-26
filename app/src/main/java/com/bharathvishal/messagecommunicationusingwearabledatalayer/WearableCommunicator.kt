@@ -16,6 +16,13 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 
+internal data class InfluxWriteStatus(
+    val activity: String,
+    val wearable: String,
+    val pending: Long,
+    val failures: Long
+)
+
 class WearableCommunicator(
     private val context: Context,
     private val onMessageReceivedCallback: (String) -> Unit,
@@ -34,6 +41,38 @@ class WearableCommunicator(
     // PEMESA_WATCH_BATTERY_V1
     private val WATCH_BATTERY_PATH = "/pemesa/watch-battery"
     var onWatchBatteryLevel: ((Int?) -> Unit)? = null
+
+    private val influxStatusPath = "/pemesa/influx-status-v1"
+    @Volatile private var influxRequestId: String? = null
+    internal var onInfluxStatus: ((InfluxWriteStatus) -> Unit)? = null
+
+    fun requestInfluxStatus() {
+        val node = lastNodeId ?: return
+        val id = java.util.UUID.randomUUID().toString()
+        influxRequestId = id
+        Wearable.getMessageClient(context)
+            .sendMessage(node, influxStatusPath, id.toByteArray(StandardCharsets.UTF_8))
+            .addOnFailureListener { error -> Log.w("WearableComm", "InfluxDB status request failed", error) }
+    }
+
+    private fun receiveInfluxStatus(event: MessageEvent, message: String) {
+        if (listenerRegistration == null || event.sourceNodeId != lastNodeId) return
+        try {
+            val reply = org.json.JSONObject(message)
+            if (reply.getString("id") != influxRequestId) return
+            val status = InfluxWriteStatus(
+                reply.getString("activity"), reply.getString("wearable"),
+                reply.getLong("pending"), reply.getLong("failures")
+            )
+            val states = setOf("NONE", "OK", "ERROR")
+            if (status.activity in states && status.wearable in states &&
+                status.pending >= 0 && status.failures >= 0) {
+                onInfluxStatus?.invoke(status)
+            }
+        } catch (error: Exception) {
+            Log.w("WearableComm", "Invalid InfluxDB status reply", error)
+        }
+    }
 
     fun requestWatchBattery() {
         val nodeId = lastNodeId ?: return
@@ -191,6 +230,7 @@ class WearableCommunicator(
         pendingCommands.values.forEach { it.result.complete("UNKNOWN") }
         // Invalidate the registration before releasing the listener.
         listenerRegistration = null
+        influxRequestId = null
         pendingConnectionAck?.cancel()
         Wearable.getMessageClient(context).removeListener(this)
         Log.d("WearableListener", "📴 Listener supprimé pour les messages")
@@ -214,6 +254,7 @@ class WearableCommunicator(
                     onWatchBatteryLevel?.invoke(message.toIntOrNull()?.takeIf { it in 0..100 })
                 }
             }
+            influxStatusPath -> receiveInfluxStatus(event, message)
             commandAckPath -> receiveCommandAck(event, message)
             MESSAGE_ITEM_RECEIVED_PATH -> {
                 onMessageReceivedCallback(message)
