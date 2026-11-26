@@ -1,80 +1,105 @@
 # PEMESA
 
-PEMESA (*Pénibilité Métier Santé*) is a research application for collecting and annotating wearable sensor data in studies of work-related strain among healthcare professionals. It consists of an Android mobile application and a Wear OS acquisition application.
+PEMESA (*Pénibilité Métier Santé*) is a research application designed to collect and annotate wearable sensor data for the study of work-related strain among healthcare professionals.
 
-## Repository structure
+The Android mobile application manages participants, activity annotations, fatigue ratings, and acquisition settings. The Wear OS application collects sensor data and sends them directly to InfluxDB over HTTPS.
 
-| Directory | Purpose |
+## Features
+
+- Real-time activity annotation and subjective fatigue assessment.
+- Configurable sensor selection, sampling frequency, and transmission interval.
+- Smartwatch association and configuration synchronization.
+- Temporary buffering in RAM and automatic transmission retries.
+- Connection monitoring, thermal monitoring, and technical diagnostics.
+- English and French interfaces.
+
+## Collected data
+
+| Signal | InfluxDB fields |
 | --- | --- |
-| `app/` | Mobile interface, participant identification, activity annotation, device association, and configuration |
-| `wear/` | Sensor acquisition, session control, buffering, and InfluxDB transmission |
-| `tools/pemesa-migration/` | Historical migration utilities |
-| `.github/workflows/` | Build and test automation |
+| Acceleration | `acceX`, `acceY`, `acceZ` |
+| Angular velocity | `gyroX`, `gyroY`, `gyroZ` |
+| Gravity | `gravityX`, `gravityY`, `gravityZ` |
+| Linear acceleration | `linAccX`, `linAccY`, `linAccZ` |
+| Rotation vector | `rotX`, `rotY`, `rotZ`, `rotW` |
+| Magnetic field (optional) | `magX`, `magY`, `magZ` |
+| Heart rate | `bpm` |
+| Steps | `steps` |
+| Ambient light | `lux` |
+| Atmospheric pressure | `hPa` |
+| Subjective fatigue (0–5) | `fatigue_level` |
 
-## Architecture
+The inertial sampling target is configurable at 25, 50, or 100 Hz. The default is 50 Hz with a 10-second transmission interval. Effective sampling rates and sensor availability depend on the device. Physiological and environmental measurements are event-driven; fatigue is recorded at session start and when its value changes.
 
-The mobile application associates with a selected watch and sends acquisition commands and configuration revisions through the Wear OS Data Layer. The watch verifies the saved configuration before starting a session. During acquisition, sensor callbacks are processed on a dedicated thread. Inertial samples are annotated on the watch using the current activity label, participant identifier, session identifier, watch identifier, and acquisition timestamp.
+## Installation
 
-The watch submits data directly to InfluxDB over HTTPS. Independent, bounded FIFO queues in RAM separate activity and wearable transmissions. No measurement data are permanently stored by the application on the watch. Configuration is persisted separately; custom API credentials are protected using Android Keystore-backed encryption.
+### Requirements
 
-## Acquisition
+- An Android smartphone and a Wear OS smartwatch.
+- JDK 17 and Android SDK 36 to build the applications.
+- An InfluxDB server accessible over HTTPS.
 
-The configurable inertial sampling targets are 25, 50, and 100 Hz. The default is 50 Hz with a 10-second activity transmission interval. The actual hardware sensor event rate and effective sampling rate depend on the device and operating conditions.
+### Build from source
 
-| Signal | Android sensor | InfluxDB fields |
-| --- | --- | --- |
-| Acceleration | `TYPE_ACCELEROMETER` | `acceX`, `acceY`, `acceZ` |
-| Angular velocity | `TYPE_GYROSCOPE` | `gyroX`, `gyroY`, `gyroZ` |
-| Gravity | `TYPE_GRAVITY` | `gravityX`, `gravityY`, `gravityZ` |
-| Linear acceleration | `TYPE_LINEAR_ACCELERATION` | `linAccX`, `linAccY`, `linAccZ` |
-| Rotation vector | `TYPE_ROTATION_VECTOR` | `rotX`, `rotY`, `rotZ`, `rotW` |
-| Magnetic field (optional; disabled by default) | `TYPE_MAGNETIC_FIELD` | `magX`, `magY`, `magZ` |
-| Heart rate | `TYPE_HEART_RATE` | `bpm` |
-| Steps | `TYPE_STEP_COUNTER` | `steps` |
-| Ambient light | `TYPE_LIGHT` | `lux` |
-| Atmospheric pressure | `TYPE_PRESSURE` | `hPa` |
-| Subjective fatigue | Manual input, scale 0–5 | `fatigue_level` |
+Open the project in Android Studio or build both applications from the repository root:
 
-The inertial timer samples the latest valid sensor readings. Heart rate, step count, light, and pressure are event-driven; heart rate and light are recorded on changes. Fatigue is recorded at session start and on subsequent changes when enabled. Sensor availability and permissions depend on the device. All signals can be selected in the mobile settings.
+```sh
+./gradlew :app:assembleDebug :wear:assembleDebug
+```
 
-## Data transmission and recovery
+On Windows, use `gradlew.bat` instead of `./gradlew`.
 
-The default InfluxDB buckets are `activity` and `wearable`. The activity bucket contains the `inertial_data` and `activity` measurements. The wearable bucket contains `heart_rate`, `steps`, `light`, `pressure`, and `fatigue_level`. A user-supplied HTTPS URL, organization, distinct bucket names, and write token are mandatory before acquisition. No server URL, organization, or API token is embedded in the application. Use a dedicated token restricted to writing to the two selected buckets; keep research read access separate. Use study-specific credentials; do not disclose tokens in publications or shared logs.
+Install the mobile APK on the phone and the Wear OS APK on the watch. To install on the watch using ADB, enable wireless debugging and use the IP address and ports displayed on the watch:
 
-Transient HTTP and network failures trigger bounded retries with increasing delays, reusing the original payload and timestamps. A batch in transmission has a five-minute recovery budget. The activity queue holds up to 32 waiting batches; the wearable queue is limited to 2,048 pending records. Data can be lost if the queues fill, recovery fails, or the watch process stops. A successful Stop acknowledgement confirms acquisition has stopped and partial batches have been queued, not that all measurements have been committed to InfluxDB.
+```sh
+adb pair <IP>:<PAIRING_PORT>
+adb connect <IP>:<DEBUG_PORT>
+adb devices
+```
 
-If the phone disconnects during acquisition, the watch may continue collecting and transmitting while its application remains running. Samples retain the last acknowledged activity label until a new annotation reaches the watch. If Internet access is interrupted but the phone-watch link remains available, new annotations can still be applied. The mobile interface displays transmission and connection status; diagnostics include the Android thermal status and a bounded technical journal.
+Install the generated watch APK using `adb install -r <APK_PATH>`.
 
-## Build and installation
+## Configuration and use
 
-The Android modules use compile SDK 36 and target SDK 36. The continuous integration workflow uses JDK 17.
+1. Open PEMESA on both devices and grant the required sensor permissions on the watch.
+2. Associate the watch in **Settings > Smartwatch management**.
+3. In **Settings > InfluxDB**, enter the HTTPS server URL, organization, bucket names, and API write token.
+4. Save the configuration, confirm synchronization, and select **Test saved connection**.
+5. Select the required sensors and acquisition settings.
+6. Enter the participant identifier, select the profession, and start the recording.
 
-1. Open the repository in Android Studio and install the required Android SDK.
-2. Enable developer options and wireless debugging on the test device and watch.
-3. Connect the watch using Android Debug Bridge (ADB), substituting the addresses and ports shown on the watch:
+Activity annotations and fatigue ratings can be updated during recording. Use Pause, Resume, and Stop to control the session.
 
-   ```sh
-   adb pair <IP>:<PAIRING_PORT>
-   adb connect <IP>:<DEBUG_PORT>
-   adb devices
-   ```
+## InfluxDB
 
-4. Build both modules and run the JVM tests:
+The default bucket names are:
 
-   ```sh
-   ./gradlew :app:assembleDebug :wear:assembleDebug :app:testDebugUnitTest :wear:testDebugUnitTest
-   ```
+| Bucket | Measurements |
+| --- | --- |
+| `activity` | `inertial_data`, `activity` |
+| `wearable` | `heart_rate`, `steps`, `light`, `pressure`, `fatigue_level` |
 
-   On Windows, use `gradlew.bat`.
+Inertial samples retain their acquisition timestamp, activity label, participant identifier, session identifier, watch identifier, and sequence number.
 
-5. Install the mobile and Wear OS applications on their respective devices. Open PEMESA on the watch, grant the required sensor permissions, and associate it using the mobile application.
-6. Configure InfluxDB in Settings, save and synchronize with the associated watch, then select **Test saved connection**. Both empty-body write probes must succeed before Start. Select sensors and acquisition settings and verify the watch configuration confirmation. Clearing the server configuration removes the saved credential from the phone and synchronizes an unconfigured revision when the watch is available and idle.
+No server credentials are embedded in the current application source. The active token is stored using Android Keystore-backed encryption. Use a dedicated token with write access to the selected buckets, and a separate read token for analysis. Revoke any previously committed credentials before distributing the repository or APKs.
 
-## Experimental validation
+## Connection interruptions
 
-Before deploying PEMESA in a study, verify sensor availability, effective sampling rate, activity annotation timing, clock alignment, transmission integrity, battery endurance, and thermal behavior on the target hardware. Include controlled phone-watch disconnection, Internet outage, reconnection, and Stop tests. The JVM tests and successful Android builds do not replace physical-device or end-to-end experimental validation.
+The watch can continue an active recording when the phone disconnects, provided the watch application remains running. The last confirmed activity label is retained until a new annotation is received.
 
-For reproducibility, record the repository commit, device model, software versions, selected sensors, sampling target, transmission interval, and study configuration. Do not include participant identifiers or API credentials in public materials.
+During Internet outages, pending measurements are buffered in RAM and transmission is retried automatically. The activity queue holds up to 32 waiting batches, and the wearable queue holds up to 2,048 pending records. Each in-flight batch has a five-minute retry budget. Measurements may be lost if the buffers fill, retries fail, or the watch process stops.
+
+Stop confirms that acquisition has ended and partial batches have been queued; it does not confirm that every measurement has reached InfluxDB. No measurement data are permanently stored by the application on the watch.
+
+## Tests
+
+Run the JVM unit tests for both modules:
+
+```sh
+./gradlew :app:testDebugUnitTest :wear:testDebugUnitTest
+```
+
+Before experimental deployment, validate effective sampling rates, annotation timing, transmission integrity, connectivity recovery, battery endurance, and thermal behavior on the target devices. Record the software revision and acquisition configuration for reproducibility.
 
 ## Contact
 
@@ -82,10 +107,4 @@ Development team: djalal.bouchekif@irit.fr
 
 ## License
 
-See the [LICENSE](LICENSE) file (Apache License, Version 2.0).
-
-## Credential management
-
-Use separate, least-privilege write tokens for research devices and read tokens for analysis. Rotate and revoke tokens using the InfluxDB administration interface. Do not commit tokens or private endpoints, including in build configuration or migration scripts. A token removed from current source may remain in historical commits; revoke any previously committed token before distributing the repository or APKs. Both mobile and watch applications must be updated together for this configuration protocol.
-
-The phone retains up to three distinct previous values for the URL, organization, and each bucket. Only the active encrypted API token is retained. The token field is masked by default, with a visibility control for the current input. History is local to the phone and is never synchronized with the watch. Settings > History & cache provides separate actions to remove the history or temporary phone cache files without removing the active configuration or acquisition buffers.
+Apache License, Version 2.0. See [LICENSE](LICENSE).
