@@ -1,19 +1,28 @@
 # Android Studio
+.idea/
 *.iml
-.gradle
-/local.properties
-/.idea
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+.gradle/
+local.properties
+
+# Build
+build/
+captures/
+.externalNativeBuild/
+.cxx/
 *.log
+*.apk
+*.aab
 
-# Keystore files
+# Signing and secrets
 *.jks
+*.keystore
+keystore.properties
+.env
+.env.*
+!.env.example
 
-# OS generated files
+# Operating system
+.DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini

@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Message communication using Wearable Data Layer"
+rootProject.name = "PEMESA"
 include(":app",":wear")
